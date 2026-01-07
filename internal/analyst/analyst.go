@@ -602,18 +602,25 @@ func (a *Analyst) getPriceFromCLOB(ctx context.Context, tokenID string, side typ
 
 		timestamp := strconv.FormatInt(time.Now().Unix(), 10)
 
-		// Create message for HMAC: method + path + body + timestamp (body is empty for GET)
-		message := fmt.Sprintf("%s%s%s", "GET", path, timestamp)
+		// Create message for HMAC: timestamp + method + path + body (body is empty for GET)
+		// Per official Polymarket client: format!("{timestamp}{method}{path}{body}")
+		message := fmt.Sprintf("%s%s%s", timestamp, "GET", path)
 
 		// Generate HMAC-SHA256 signature
-		secretBytes, decodeErr := base64.StdEncoding.DecodeString(apiSecret)
+		// Secret is base64 URL-safe encoded, decode it first
+		secretBytes, decodeErr := base64.URLEncoding.DecodeString(apiSecret)
 		if decodeErr != nil {
-			// If not base64, use as-is
-			secretBytes = []byte(apiSecret)
+			// Try standard base64 if URL-safe fails
+			secretBytes, decodeErr = base64.StdEncoding.DecodeString(apiSecret)
+			if decodeErr != nil {
+				// If not base64, use as-is
+				secretBytes = []byte(apiSecret)
+			}
 		}
 		mac := hmac.New(sha256.New, secretBytes)
 		mac.Write([]byte(message))
-		hmacSignature := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+		// Encode signature using base64 URL-safe encoding (per official client)
+		hmacSignature := base64.URLEncoding.EncodeToString(mac.Sum(nil))
 
 		// Set L2 authentication headers
 		req.Header.Set("POLY_ADDRESS", a.signerAddress)

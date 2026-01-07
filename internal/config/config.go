@@ -41,7 +41,7 @@ type Config struct {
 	MinDepositAmount  *big.Int // Minimum deposit in USDC.e (wei units, 6 decimals for USDC)
 	SlippageTolerance int      // Percentage (e.g., 3 for 3%)
 	MaxTradePercent   int      // Maximum percentage of balance to use per trade (0-100, default 100)
-	MinTradeAmount    *big.Int // Minimum trade amount in USDC.e (default $3 = 3000000)
+	MinTradeAmount    *big.Int // Minimum trade amount in USDC.e (default $1 = 1000000)
 	InteractiveMode   bool     // If true, prompt for trade amount instead of auto-scaling
 }
 
@@ -100,8 +100,8 @@ func Load() (*Config, error) {
 	}
 	cfg.MaxTradePercent = maxTradePercent
 
-	// Optional: Minimum trade amount (default $3 = 3,000,000 in USDC units)
-	minTradeStr := getEnv("MIN_TRADE_AMOUNT", "3")
+	// Optional: Minimum trade amount (default $1 = 1,000,000 in USDC units)
+	minTradeStr := getEnv("MIN_TRADE_AMOUNT", "1")
 	minTrade, err := parseUSDCAmount(minTradeStr)
 	if err != nil {
 		return nil, fmt.Errorf("invalid MIN_TRADE_AMOUNT: %w", err)

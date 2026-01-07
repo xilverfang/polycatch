@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/polywatch/internal/analyst"
+	"github.com/polywatch/internal/apikey"
 	"github.com/polywatch/internal/config"
 	"github.com/polywatch/internal/executor"
 	"github.com/polywatch/internal/listener"
@@ -22,17 +23,24 @@ func main() {
 	// Parse command-line flags
 	monitorFlag := flag.Bool("monitor", false, "Run the monitor (Listener + Analyst)")
 	executorFlag := flag.Bool("executor", false, "Run the executor (waiting for trade signals)")
+	createAPIKeyFlag := flag.Bool("create-api-key", false, "Create new API credentials programmatically")
 	flag.Parse()
-
-	// At least one flag must be set
-	if !*monitorFlag && !*executorFlag {
-		log.Fatal("Error: At least one flag must be set. Use --monitor or --executor (or both)")
-	}
 
 	// Load configuration
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("Config error: %v", err)
+	}
+
+	// Handle create-api-key flag (exit early if set)
+	if *createAPIKeyFlag {
+		handleCreateAPIKey(cfg)
+		return
+	}
+
+	// At least one flag must be set
+	if !*monitorFlag && !*executorFlag {
+		log.Fatal("Error: At least one flag must be set. Use --monitor, --executor, or --create-api-key")
 	}
 
 	// Display startup info
@@ -198,4 +206,26 @@ func handleExecutorErrors(executorInstance *executor.Executor) {
 		log.Printf("ERROR | Executor: %v", err)
 		// Errors are logged but don't stop the application
 	}
+}
+
+// handleCreateAPIKey creates API credentials and outputs them
+func handleCreateAPIKey(cfg *config.Config) {
+	log.Printf("Creating API credentials...")
+	log.Println("═══════════════════════════════════════════════════════════")
+
+	// Create API credentials
+	creds, err := apikey.CreateAPIKey(context.Background(), cfg)
+	if err != nil {
+		log.Fatalf("Failed to create API key: %v", err)
+	}
+
+	// Output credentials
+	fmt.Println("\n✅ API Credentials Created Successfully!")
+	fmt.Println("═══════════════════════════════════════════════════════════")
+	fmt.Printf("BUILDER_API_KEY=%s\n", creds.APIKey)
+	fmt.Printf("BUILDER_SECRET=%s\n", creds.Secret)
+	fmt.Printf("BUILDER_PASSPHRASE=%s\n", creds.Passphrase)
+	fmt.Println("═══════════════════════════════════════════════════════════")
+	fmt.Println("\n⚠️  IMPORTANT: Save these credentials to your .env file!")
+	fmt.Println("   Replace the existing BUILDER_API_KEY, BUILDER_SECRET, and BUILDER_PASSPHRASE")
 }

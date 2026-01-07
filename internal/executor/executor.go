@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/hmac"
+	cryptorand "crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -11,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"math/big"
 	"net/http"
 	"os"
@@ -29,6 +31,19 @@ import (
 	"github.com/polywatch/internal/types"
 	"github.com/polywatch/internal/utils"
 )
+
+// generateRandomSalt generates a random salt within 2^32 range
+// This matches Polymarket's official go-order-utils library
+// Using nanosecond timestamps would exceed JavaScript's safe integer limit
+func generateRandomSalt() int64 {
+	maxInt := int64(math.Pow(2, 32))
+	nBig, err := cryptorand.Int(cryptorand.Reader, big.NewInt(maxInt))
+	if err != nil {
+		// Fallback to millisecond timestamp if crypto/rand fails (very unlikely)
+		return time.Now().UnixMilli() % maxInt
+	}
+	return nBig.Int64()
+}
 
 // Executor executes trades based on trade signals from the Analyst
 type Executor struct {
@@ -224,21 +239,20 @@ func (e *Executor) executeTrade(ctx context.Context, signal *types.TradeSignal) 
 		return fmt.Errorf("balance check failed: %w", err)
 	}
 
-	// Update signal size to scaled amount if it was adjusted
+	// Update signal size if it was adjusted (either from user input or auto-scaling)
 	if scaledSize != signal.Size {
-		log.Printf("Trade scaled: Original size: %s → Scaled size: %s (based on available balance)",
-			signal.Size, scaledSize)
+		// Only log if it was auto-scaled (not user input in interactive mode)
+		// In interactive mode, the user already sees the confirmation message
+		if !e.config.InteractiveMode {
+			log.Printf("Trade scaled: Original size: %s → Scaled size: %s (based on available balance)",
+				signal.Size, scaledSize)
+		}
 		signal.Size = scaledSize
 	}
 
-	// 3. Generate EIP-712 signature
-	signature, err := e.generateSignature(signal)
-	if err != nil {
-		return fmt.Errorf("failed to generate signature: %w", err)
-	}
-
-	// 4. Submit order to CLOB API
-	orderID, err := e.submitOrder(ctx, signal, signature)
+	// 3. Build order data, generate signature, and submit
+	// Order data must be built first, then signed with EIP-712
+	orderID, err := e.buildAndSubmitOrder(ctx, signal)
 	if err != nil {
 		return fmt.Errorf("failed to submit order: %w", err)
 	}
@@ -367,18 +381,22 @@ func (e *Executor) checkAndScaleBalance(ctx context.Context, signal *types.Trade
 			return "", fmt.Errorf("user input cancelled or invalid: %w", err)
 		}
 
+		// Verify minimum trade amount (compare entered amount directly, not calculated cost)
+		// This avoids rounding issues when calculating shares and converting back
+		userAmountUSDC := big.NewInt(int64(userAmount * 1_000_000))
+		if userAmountUSDC.Cmp(e.config.MinTradeAmount) < 0 {
+			minTradeDollarStr, _ := new(big.Float).Quo(new(big.Float).SetInt(e.config.MinTradeAmount), big.NewFloat(1_000_000)).Float64()
+			return "", fmt.Errorf("entered amount $%.2f is below minimum trade amount $%.2f", userAmount, minTradeDollarStr)
+		}
+
 		// Calculate shares from user-entered dollar amount
 		// shares = (userAmount / price)
-		userAmountUSDC := big.NewInt(int64(userAmount * 1_000_000))
 		priceInUSDC := big.NewInt(int64(priceFloat * 1_000_000))
 		userShares := new(big.Int).Div(new(big.Int).Mul(userAmountUSDC, big.NewInt(1_000_000)), priceInUSDC)
 
-		// Verify minimum trade amount
-		userTradeCost := new(big.Int).Mul(userShares, priceInUSDC)
-		userTradeCost.Div(userTradeCost, big.NewInt(1_000_000))
-		if userTradeCost.Cmp(e.config.MinTradeAmount) < 0 {
-			minTradeDollarStr, _ := new(big.Float).Quo(new(big.Float).SetInt(e.config.MinTradeAmount), big.NewFloat(1_000_000)).Float64()
-			return "", fmt.Errorf("entered amount $%.2f is below minimum trade amount $%.2f", userAmount, minTradeDollarStr)
+		// Ensure we have at least 1 share
+		if userShares.Sign() <= 0 {
+			return "", fmt.Errorf("calculated shares (%s) is too small for price $%.4f", userShares.String(), priceFloat)
 		}
 
 		// Verify user has enough balance
@@ -436,7 +454,7 @@ func (e *Executor) promptTradeAmount(balance, required, price float64) (float64,
 	log.Printf("  Original Trade Size: $%.2f", required)
 	log.Printf("  Price per share: $%.4f", price)
 	log.Println("═══════════════════════════════════════════════════════════")
-	log.Print("Enter amount to spend (USD, minimum $3) or 'skip' to cancel: ")
+	log.Print("Enter amount to spend (USD, minimum $1) or 'skip' to cancel: ")
 
 	// Create a channel to receive user input
 	inputChan := make(chan string, 1)
@@ -467,8 +485,12 @@ func (e *Executor) promptTradeAmount(balance, required, price float64) (float64,
 			return 0, fmt.Errorf("invalid amount: %w", err)
 		}
 
-		if amount < 3.0 {
-			return 0, fmt.Errorf("amount must be at least $3.00")
+		// Get minimum trade amount from config (convert from USDC units to dollars)
+		minTradeDollars := new(big.Float).Quo(new(big.Float).SetInt(e.config.MinTradeAmount), big.NewFloat(1_000_000))
+		minTradeFloat, _ := minTradeDollars.Float64()
+
+		if amount < minTradeFloat {
+			return 0, fmt.Errorf("amount must be at least $%.2f", minTradeFloat)
 		}
 
 		return amount, nil
@@ -481,90 +503,245 @@ func (e *Executor) promptTradeAmount(balance, required, price float64) (float64,
 	}
 }
 
-// generateSignature generates an EIP-712 signature for the order
-func (e *Executor) generateSignature(signal *types.TradeSignal) (string, error) {
+// OrderData holds all the fields needed for order creation and signing
+type OrderData struct {
+	Salt          int64
+	Maker         string
+	Signer        string
+	Taker         string
+	TokenID       string
+	MakerAmount   string
+	TakerAmount   string
+	Side          int // 0 = BUY, 1 = SELL
+	Expiration    string
+	Nonce         string
+	FeeRateBps    string
+	SignatureType int
+}
+
+// buildAndSubmitOrder builds order data, signs it, and submits to the API
+func (e *Executor) buildAndSubmitOrder(ctx context.Context, signal *types.TradeSignal) (string, error) {
+	// Parse price
+	price, err := strconv.ParseFloat(signal.Price, 64)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse price: %w", err)
+	}
+
+	// Parse size as the number of shares (already in micro-units)
+	size, err := strconv.ParseInt(signal.Size, 10, 64)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse size: %w", err)
+	}
+
+	// Calculate makerAmount and takerAmount based on side and price
+	// For BUY: makerAmount = USDC you pay, takerAmount = shares you receive
+	// For SELL: makerAmount = shares you sell, takerAmount = USDC you receive
+	//
+	// Polymarket precision requirements (varies by market tick size):
+	// - USDC amounts: max 2 decimal places → multiples of 10,000 (since $0.01 = 10,000 micro-USDC)
+	// - Share amounts: max 4 decimal places → multiples of 100 (since 0.0001 shares = 100 micro)
+	var makerAmount, takerAmount int64
+	var side int
+	if signal.Side == types.OrderSideBuy {
+		side = 0 // BUY
+		// Calculate raw amounts
+		rawTakerAmount := size
+		rawMakerAmount := int64(float64(size) * price)
+
+		// Round makerAmount (USDC) to 2 decimals (multiples of 10,000)
+		makerAmount = (rawMakerAmount / 10000) * 10000
+		// Round takerAmount (shares) to 4 decimals (multiples of 100)
+		takerAmount = (rawTakerAmount / 100) * 100
+
+		// Ensure amounts aren't zero
+		if makerAmount == 0 {
+			makerAmount = 10000 // Minimum $0.01
+		}
+		if takerAmount == 0 {
+			takerAmount = 100 // Minimum shares
+		}
+	} else {
+		side = 1 // SELL
+		// Calculate raw amounts
+		rawMakerAmount := size
+		rawTakerAmount := int64(float64(size) * price)
+
+		// Round makerAmount (shares) to 4 decimals (multiples of 100)
+		makerAmount = (rawMakerAmount / 100) * 100
+		// Round takerAmount (USDC) to 2 decimals (multiples of 10,000)
+		takerAmount = (rawTakerAmount / 10000) * 10000
+
+		// Ensure amounts aren't zero
+		if makerAmount == 0 {
+			makerAmount = 100
+		}
+		if takerAmount == 0 {
+			takerAmount = 10000
+		}
+	}
+
+	makerAmountStr := strconv.FormatInt(makerAmount, 10)
+	takerAmountStr := strconv.FormatInt(takerAmount, 10)
+
+	// Generate random salt within 2^32 range (matches Polymarket's official Go library)
+	// This is critical - nanosecond timestamps are too large and cause JSON precision issues
+	salt := generateRandomSalt()
+
+	// Build order data
+	orderData := &OrderData{
+		Salt:          salt,
+		Maker:         e.config.FunderAddress,
+		Signer:        e.signerAddress,
+		Taker:         "0x0000000000000000000000000000000000000000",
+		TokenID:       signal.TokenID,
+		MakerAmount:   makerAmountStr,
+		TakerAmount:   takerAmountStr,
+		Side:          side,
+		Expiration:    "0",
+		Nonce:         "0",
+		FeeRateBps:    "0",
+		SignatureType: e.config.SignatureType,
+	}
+
+	log.Printf("DEBUG | Order: side=%d, price=%.6f, size=%d, makerAmount=%s, takerAmount=%s",
+		side, price, size, makerAmountStr, takerAmountStr)
+
+	// Generate EIP-712 signature for this exact order data
+	signature, err := e.signOrder(orderData)
+	if err != nil {
+		return "", fmt.Errorf("failed to sign order: %w", err)
+	}
+
+	// Submit order with signature
+	return e.submitSignedOrder(ctx, signal, orderData, signature)
+}
+
+// CTF Exchange contract address on Polygon mainnet
+const CTFExchangeAddress = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"
+
+// signOrder generates an EIP-712 signature for the order
+// Uses the CTF Exchange Order type hash from Polymarket
+func (e *Executor) signOrder(order *OrderData) (string, error) {
 	// Parse private key
 	privateKey, err := crypto.HexToECDSA(strings.TrimPrefix(e.config.SignerPrivateKey, "0x"))
 	if err != nil {
 		return "", fmt.Errorf("invalid private key: %w", err)
 	}
 
-	// EIP-712 domain separator for Polygon
-	domain := map[string]interface{}{
-		"name":              "Polymarket",
-		"version":           "1",
-		"chainId":           e.config.ChainID,
-		"verifyingContract": "0x0000000000000000000000000000000000000000",
-	}
+	// Order type hash: keccak256("Order(uint256 salt,address maker,address signer,address taker,uint256 tokenId,uint256 makerAmount,uint256 takerAmount,uint256 expiration,uint256 nonce,uint256 feeRateBps,uint8 side,uint8 signatureType)")
+	orderTypeHash := crypto.Keccak256([]byte("Order(uint256 salt,address maker,address signer,address taker,uint256 tokenId,uint256 makerAmount,uint256 takerAmount,uint256 expiration,uint256 nonce,uint256 feeRateBps,uint8 side,uint8 signatureType)"))
 
-	// Order message
-	message := map[string]interface{}{
-		"tokenId":       signal.TokenID,
-		"side":          string(signal.Side),
-		"price":         signal.Price,
-		"size":          signal.Size,
-		"makerAddress":  e.config.FunderAddress,
-		"signatureType": e.config.SignatureType,
-	}
+	// Parse order fields
+	salt := new(big.Int).SetInt64(order.Salt)
+	maker := common.HexToAddress(order.Maker)
+	signer := common.HexToAddress(order.Signer)
+	taker := common.HexToAddress(order.Taker)
+	tokenId := new(big.Int)
+	tokenId.SetString(order.TokenID, 10)
+	makerAmount := new(big.Int)
+	makerAmount.SetString(order.MakerAmount, 10)
+	takerAmount := new(big.Int)
+	takerAmount.SetString(order.TakerAmount, 10)
+	expiration := new(big.Int)
+	expiration.SetString(order.Expiration, 10)
+	nonce := new(big.Int)
+	nonce.SetString(order.Nonce, 10)
+	feeRateBps := new(big.Int)
+	feeRateBps.SetString(order.FeeRateBps, 10)
 
-	// Generate EIP-712 hash
-	hash, err := e.generateEIP712Hash(domain, message)
-	if err != nil {
-		return "", fmt.Errorf("failed to generate EIP-712 hash: %w", err)
-	}
+	// Encode order struct - all fields padded to 32 bytes
+	structData := []byte{}
+	structData = append(structData, orderTypeHash...)
+	structData = append(structData, common.LeftPadBytes(salt.Bytes(), 32)...)
+	structData = append(structData, common.LeftPadBytes(maker.Bytes(), 32)...)
+	structData = append(structData, common.LeftPadBytes(signer.Bytes(), 32)...)
+	structData = append(structData, common.LeftPadBytes(taker.Bytes(), 32)...)
+	structData = append(structData, common.LeftPadBytes(tokenId.Bytes(), 32)...)
+	structData = append(structData, common.LeftPadBytes(makerAmount.Bytes(), 32)...)
+	structData = append(structData, common.LeftPadBytes(takerAmount.Bytes(), 32)...)
+	structData = append(structData, common.LeftPadBytes(expiration.Bytes(), 32)...)
+	structData = append(structData, common.LeftPadBytes(nonce.Bytes(), 32)...)
+	structData = append(structData, common.LeftPadBytes(feeRateBps.Bytes(), 32)...)
+	structData = append(structData, common.LeftPadBytes([]byte{uint8(order.Side)}, 32)...)
+	structData = append(structData, common.LeftPadBytes([]byte{uint8(order.SignatureType)}, 32)...)
 
-	// Sign hash
-	signature, err := crypto.Sign(hash, privateKey)
+	structHash := crypto.Keccak256(structData)
+
+	// EIP-712 domain separator WITH verifyingContract (CTF Exchange)
+	// Domain type: "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
+	domainTypeHash := crypto.Keccak256([]byte("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"))
+	nameHash := crypto.Keccak256([]byte("Polymarket CTF Exchange"))
+	versionHash := crypto.Keccak256([]byte("1"))
+	chainId := new(big.Int).SetInt64(e.config.ChainID)
+	verifyingContract := common.HexToAddress(CTFExchangeAddress)
+
+	domainData := []byte{}
+	domainData = append(domainData, domainTypeHash...)
+	domainData = append(domainData, nameHash...)
+	domainData = append(domainData, versionHash...)
+	domainData = append(domainData, common.LeftPadBytes(chainId.Bytes(), 32)...)
+	domainData = append(domainData, common.LeftPadBytes(verifyingContract.Bytes(), 32)...)
+
+	domainSeparator := crypto.Keccak256(domainData)
+
+	// Final EIP-712 hash: keccak256("\x19\x01" + domainSeparator + structHash)
+	finalData := []byte{0x19, 0x01}
+	finalData = append(finalData, domainSeparator...)
+	finalData = append(finalData, structHash...)
+	hash := crypto.Keccak256(finalData)
+
+	// Sign the hash
+	sig, err := crypto.Sign(hash, privateKey)
 	if err != nil {
 		return "", fmt.Errorf("failed to sign hash: %w", err)
 	}
 
-	// Add recovery ID (v = 27 or 28)
-	signature[64] += 27
+	// Adjust v value (27 or 28 for Ethereum)
+	sig[64] += 27
 
-	return hexutil.Encode(signature), nil
+	return hexutil.Encode(sig), nil
 }
 
-// generateEIP712Hash generates EIP-712 compliant hash
-// This is a simplified version - full EIP-712 implementation would use proper encoding
-func (e *Executor) generateEIP712Hash(domain, message map[string]interface{}) ([]byte, error) {
-	// Simplified EIP-712 hash generation
-	// In production, use a proper EIP-712 library
-	// For now, we'll create a hash from the message components
-	messageStr := fmt.Sprintf("%s%s%s%s%s%d",
-		message["tokenId"],
-		message["side"],
-		message["price"],
-		message["size"],
-		message["makerAddress"],
-		message["signatureType"],
-	)
+// submitSignedOrder submits a signed order to the CLOB API
+func (e *Executor) submitSignedOrder(ctx context.Context, signal *types.TradeSignal, order *OrderData, signature string) (string, error) {
+	apiKey := strings.TrimSpace(e.config.BuilderAPIKey)
 
-	hash := crypto.Keccak256([]byte(messageStr))
-	return hash, nil
-}
-
-// submitOrder submits an order to the CLOB API
-func (e *Executor) submitOrder(ctx context.Context, signal *types.TradeSignal, signature string) (string, error) {
-	// Construct order payload
-	orderPayload := map[string]interface{}{
-		"tokenId":       signal.TokenID,
-		"side":          string(signal.Side),
-		"price":         signal.Price,
-		"size":          signal.Size,
-		"makerAddress":  e.config.FunderAddress,
-		"signatureType": e.config.SignatureType,
+	// Construct the signed order object
+	// Note: salt must be sent as string to avoid JSON precision loss for large numbers
+	signedOrder := map[string]interface{}{
+		"salt":          order.Salt, // Number - safe now that we use random salt within 2^32
+		"maker":         order.Maker,
+		"signer":        order.Signer,
+		"taker":         order.Taker,
+		"tokenId":       order.TokenID,
+		"makerAmount":   order.MakerAmount,
+		"takerAmount":   order.TakerAmount,
+		"side":          string(signal.Side), // API expects "BUY" or "SELL"
+		"expiration":    order.Expiration,
+		"nonce":         order.Nonce,
+		"feeRateBps":    order.FeeRateBps,
+		"signatureType": order.SignatureType,
 		"signature":     signature,
 	}
 
+	// Construct full order payload
+	orderPayload := map[string]interface{}{
+		"deferExec": false,
+		"order":     signedOrder,
+		"owner":     apiKey,
+		"orderType": "FAK",
+	}
+
+	// Marshal JSON - Go's json.Marshal produces compact JSON
 	payloadBytes, err := json.Marshal(orderPayload)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal order: %w", err)
 	}
 
-	// Create request
-	url := fmt.Sprintf("%s/orders", e.config.CLOBAPIURL)
-	req, err := http.NewRequestWithContext(ctx, "POST", url, strings.NewReader(string(payloadBytes)))
+	// Create request with body - endpoint is /order (singular)
+	url := fmt.Sprintf("%s/order", e.config.CLOBAPIURL)
+	bodyReader := strings.NewReader(string(payloadBytes))
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bodyReader)
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
@@ -573,7 +750,7 @@ func (e *Executor) submitOrder(ctx context.Context, signal *types.TradeSignal, s
 	req.Header.Set("Content-Type", "application/json")
 
 	// Trim whitespace from credentials (common issue when copying from UI)
-	apiKey := strings.TrimSpace(e.config.BuilderAPIKey)
+	// apiKey is already defined above for the owner field
 	apiSecret := strings.TrimSpace(e.config.BuilderSecret)
 	apiPassphrase := strings.TrimSpace(e.config.BuilderPassphrase)
 
@@ -588,24 +765,54 @@ func (e *Executor) submitOrder(ctx context.Context, signal *types.TradeSignal, s
 		return "", fmt.Errorf("BUILDER_PASSPHRASE is empty")
 	}
 
+	// Validate API key format (should be UUID-like, 36 chars with dashes or 32 without)
+	if len(apiKey) != 36 && len(apiKey) != 32 {
+		log.Printf("WARNING | API key length is %d (expected 32 or 36 for UUID format)", len(apiKey))
+	}
+
 	// Generate L2 authentication headers according to Polymarket docs
 	// Headers: POLY_ADDRESS, POLY_SIGNATURE (HMAC-SHA256), POLY_TIMESTAMP, POLY_API_KEY, POLY_PASSPHRASE
 	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
 
-	// Create message for HMAC: method + path + body + timestamp
-	path := "/orders"
+	// Create message for HMAC: timestamp + method + path + body (per official Polymarket client)
+	path := "/order"
 	body := string(payloadBytes)
-	message := fmt.Sprintf("%s%s%s%s", "POST", path, body, timestamp)
+	message := fmt.Sprintf("%s%s%s%s", timestamp, "POST", path, body)
 
 	// Generate HMAC-SHA256 signature
-	secretBytes, decodeErr := base64.StdEncoding.DecodeString(apiSecret)
+	// Secret is base64 URL-safe encoded, decode it first
+	secretBytes, decodeErr := base64.URLEncoding.DecodeString(apiSecret)
 	if decodeErr != nil {
-		// If not base64, use as-is
-		secretBytes = []byte(apiSecret)
+		// Try standard base64 if URL-safe fails
+		secretBytes, decodeErr = base64.StdEncoding.DecodeString(apiSecret)
+		if decodeErr != nil {
+			// If not base64, use as-is
+			secretBytes = []byte(apiSecret)
+		}
 	}
 	mac := hmac.New(sha256.New, secretBytes)
 	mac.Write([]byte(message))
-	hmacSignature := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+	// Encode signature using base64 URL-safe encoding (per official client)
+	hmacSignature := base64.URLEncoding.EncodeToString(mac.Sum(nil))
+
+	// Debug logging to help diagnose authentication issues
+	log.Printf("DEBUG | L2 Auth - Timestamp: %s, Path: %s, Body length: %d", timestamp, path, len(body))
+	apiKeyPreview := apiKey
+	if len(apiKey) > 8 {
+		apiKeyPreview = apiKey[:8] + "..."
+	}
+	messagePreview := message
+	if len(message) > 150 {
+		messagePreview = message[:150] + "..."
+	}
+	log.Printf("DEBUG | L2 Auth - Signer Address: %s", e.signerAddress)
+	log.Printf("DEBUG | L2 Auth - API Key: %s (length: %d)", apiKeyPreview, len(apiKey))
+	log.Printf("DEBUG | L2 Auth - Message: %s", messagePreview)
+	log.Printf("DEBUG | L2 Auth - Secret decoded: %d bytes", len(secretBytes))
+	log.Printf("DEBUG | L2 Auth - Signature: %s", hmacSignature)
+
+	// Log full payload for debugging
+	log.Printf("DEBUG | Full payload:\n%s", string(payloadBytes))
 
 	// Set L2 authentication headers
 	req.Header.Set("POLY_ADDRESS", e.signerAddress)
@@ -629,6 +836,28 @@ func (e *Executor) submitOrder(ctx context.Context, signal *types.TradeSignal, s
 
 	// Check status code
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		log.Printf("DEBUG | API Error Response:\n%s", string(bodyBytes))
+		log.Printf("DEBUG | Request Payload was:\n%s", string(payloadBytes))
+
+		// Enhanced error message for 401 errors
+		if resp.StatusCode == http.StatusUnauthorized {
+			return "", fmt.Errorf("API returned 401 Unauthorized: %s\n"+
+				"Troubleshooting:\n"+
+				"1. Verify BUILDER_API_KEY matches the API key from Polymarket Builder Dashboard\n"+
+				"2. Verify SIGNER_PRIVATE_KEY corresponds to the address used to create the API key\n"+
+				"3. Verify BUILDER_SECRET and BUILDER_PASSPHRASE are correct\n"+
+				"4. Ensure the API key was created using L1 authentication with the correct signer address\n"+
+				"5. Check that POLY_ADDRESS (%s) matches the address used during API key creation",
+				string(bodyBytes), e.signerAddress)
+		}
+
+		// Enhanced error for 400 errors
+		if resp.StatusCode == http.StatusBadRequest {
+			return "", fmt.Errorf("API returned 400 Bad Request: %s\n"+
+				"Payload sent:\n%s",
+				string(bodyBytes), string(payloadBytes))
+		}
+
 		return "", fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(bodyBytes))
 	}
 
@@ -672,18 +901,25 @@ func (e *Executor) getCurrentPrice(ctx context.Context, tokenID string, side typ
 
 	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
 
-	// Create message for HMAC: method + path + body + timestamp (body is empty for GET)
-	message := fmt.Sprintf("%s%s%s", "GET", path, timestamp)
+	// Create message for HMAC: timestamp + method + path + body (body is empty for GET)
+	// Per official Polymarket client: format!("{timestamp}{method}{path}{body}")
+	message := fmt.Sprintf("%s%s%s", timestamp, "GET", path)
 
 	// Generate HMAC-SHA256 signature
-	secretBytes, decodeErr := base64.StdEncoding.DecodeString(apiSecret)
+	// Secret is base64 URL-safe encoded, decode it first
+	secretBytes, decodeErr := base64.URLEncoding.DecodeString(apiSecret)
 	if decodeErr != nil {
-		// If not base64, use as-is
-		secretBytes = []byte(apiSecret)
+		// Try standard base64 if URL-safe fails
+		secretBytes, decodeErr = base64.StdEncoding.DecodeString(apiSecret)
+		if decodeErr != nil {
+			// If not base64, use as-is
+			secretBytes = []byte(apiSecret)
+		}
 	}
 	mac := hmac.New(sha256.New, secretBytes)
 	mac.Write([]byte(message))
-	hmacSignature := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+	// Encode signature using base64 URL-safe encoding (per official client)
+	hmacSignature := base64.URLEncoding.EncodeToString(mac.Sum(nil))
 
 	// Set L2 authentication headers
 	req.Header.Set("POLY_ADDRESS", e.signerAddress)

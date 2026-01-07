@@ -26,7 +26,7 @@ build:
 	@echo "Building $(APP_NAME)..."
 	$(GOBUILD) $(BUILD_FLAGS) -o $(BINARY) $(MAIN_PKG)
 	@echo "Build complete: $(BINARY)"
-	@echo "Run with: ./polywatch --monitor (or --executor, or both)"
+	@echo "Run with: ./polywatch --monitor (or --executor, or --create-api-key)"
 
 ## run: Run the application
 run:

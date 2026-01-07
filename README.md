@@ -14,8 +14,10 @@ A high-performance Golang bot that detects "insider" trading signals on Polymark
 - [Getting Started](#getting-started)
   - [Clone the Repository](#clone-the-repository)
   - [Install Dependencies](#install-dependencies)
+  - [Create API Credentials](#create-api-credentials)
   - [Configuration](#configuration)
 - [Usage](#usage)
+  - [Creating API Credentials](#creating-api-credentials)
   - [Running the Monitor](#running-the-monitor)
   - [Running the Executor](#running-the-executor)
   - [Running Both Together](#running-both-together)
@@ -42,7 +44,7 @@ A high-performance Golang bot that detects "insider" trading signals on Polymark
   - Builder API credentials (API key, secret, passphrase)
   - Signer private key (MetaMask private key)
 - Polygon WebSocket RPC endpoint (e.g., from Alchemy, Infura, or QuickNode)
-- Minimum $3 USDC.e balance in your Polymarket funder address
+- Minimum $1 USDC.e balance in your Polymarket funder address
 
 ## Installation
 
@@ -143,6 +145,44 @@ Or use the Makefile:
 make deps
 ```
 
+### Create API Credentials
+
+Before configuring the bot, you need Polymarket API credentials. You can create them programmatically using Polywatch:
+
+1. **Set your signer private key** in `.env`:
+
+```env
+SIGNER_PRIVATE_KEY=0xYourPrivateKeyHere
+```
+
+2. **Build and run the API key creation command:**
+
+```bash
+make build
+./polywatch --create-api-key
+```
+
+3. **Save the output credentials:**
+
+The command will output your API credentials:
+
+```
+API Credentials:
+  API Key:    550e8400-e29b-41d4-a716-446655440000
+  Secret:     base64EncodedSecretString==
+  Passphrase: randomPassphraseString
+```
+
+4. **Add these to your `.env` file:**
+
+```env
+BUILDER_API_KEY=550e8400-e29b-41d4-a716-446655440000
+BUILDER_SECRET=base64EncodedSecretString==
+BUILDER_PASSPHRASE=randomPassphraseString
+```
+
+**Note:** If you already have API credentials, this command will derive the existing ones rather than creating duplicates.
+
 ### Configuration
 
 1. **Create a `.env` file** in the project root:
@@ -177,8 +217,8 @@ SLIPPAGE_TOLERANCE=3
 # Optional: Interactive mode - prompt for trade amount (default: true)
 INTERACTIVE_MODE=true
 
-# Optional: Minimum trade amount in USD (default: $3)
-MIN_TRADE_AMOUNT=3
+# Optional: Minimum trade amount in USD (default: $1)
+MIN_TRADE_AMOUNT=1
 
 # Optional: Max percentage of balance to use per trade (only if INTERACTIVE_MODE=false)
 # Default: 100 (use all available balance)
@@ -203,6 +243,16 @@ Or manually:
 ```bash
 go build -o polywatch ./cmd/polywatch
 ```
+
+### Creating API Credentials
+
+Generate or derive your Polymarket API credentials:
+
+```bash
+./polywatch --create-api-key
+```
+
+This uses L1 authentication to create or retrieve your API credentials. The credentials will be printed to the console - save them to your `.env` file.
 
 ### Running the Monitor
 
@@ -285,7 +335,7 @@ The executor will automatically connect to the monitor via Unix socket.
 | `MIN_DEPOSIT_AMOUNT` | Minimum deposit to monitor (USD) | `10000` |
 | `SLIPPAGE_TOLERANCE` | Maximum slippage percentage | `3` |
 | `INTERACTIVE_MODE` | Prompt for trade amount | `true` |
-| `MIN_TRADE_AMOUNT` | Minimum trade amount (USD) | `3` |
+| `MIN_TRADE_AMOUNT` | Minimum trade amount (USD) | `1` |
 | `MAX_TRADE_PERCENT` | Max balance % per trade (auto-mode) | `100` |
 
 ## How It Works
@@ -404,6 +454,26 @@ Common targets:
 - `fmt` - Format code
 - `clean` - Remove build artifacts
 - `deps` - Download and tidy dependencies
+
+### Command-Line Flags
+
+```bash
+./polywatch [flags]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--monitor` | Run the monitor (detects high-value deposits and trades) |
+| `--executor` | Run the executor (executes trade signals) |
+| `--create-api-key` | Create or derive Polymarket API credentials |
+
+**Examples:**
+```bash
+./polywatch --monitor              # Monitor only
+./polywatch --executor             # Executor only (connects via IPC)
+./polywatch --monitor --executor   # Run both together
+./polywatch --create-api-key       # Generate API credentials
+```
 
 ### Project Structure
 
