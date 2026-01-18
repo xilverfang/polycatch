@@ -16,17 +16,29 @@ import (
 	"github.com/polywatch/internal/config"
 	"github.com/polywatch/internal/executor"
 	"github.com/polywatch/internal/listener"
+	"github.com/polywatch/internal/storage"
+	"github.com/polywatch/internal/telegram"
 	"github.com/polywatch/internal/utils"
 )
 
 func main() {
+	// Load .env file first (before any env var access)
+	_ = config.LoadEnvFile(".env")
+
 	// Parse command-line flags
-	monitorFlag := flag.Bool("monitor", false, "Run the monitor (Listener + Analyst)")
-	executorFlag := flag.Bool("executor", false, "Run the executor (waiting for trade signals)")
+	monitorFlag := flag.Bool("monitor", false, "Run the CLI monitor (Listener + Analyst)")
+	executorFlag := flag.Bool("executor", false, "Run the CLI executor (waiting for trade signals)")
 	createAPIKeyFlag := flag.Bool("create-api-key", false, "Create new API credentials programmatically")
+	telegramFlag := flag.Bool("telegram", false, "Run the Telegram bot interface")
 	flag.Parse()
 
-	// Load configuration
+	// Handle Telegram bot mode (completely separate flow)
+	if *telegramFlag {
+		runTelegramBot()
+		return
+	}
+
+	// Load configuration for CLI mode
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("Config error: %v", err)
@@ -38,9 +50,10 @@ func main() {
 		return
 	}
 
-	// At least one flag must be set
+	// At least one flag must be set for CLI mode
 	if !*monitorFlag && !*executorFlag {
-		log.Fatal("Error: At least one flag must be set. Use --monitor, --executor, or --create-api-key")
+		printUsage()
+		os.Exit(1)
 	}
 
 	// Display startup info
@@ -228,4 +241,111 @@ func handleCreateAPIKey(cfg *config.Config) {
 	fmt.Println("═══════════════════════════════════════════════════════════")
 	fmt.Println("\n⚠️  IMPORTANT: Save these credentials to your .env file!")
 	fmt.Println("   Replace the existing BUILDER_API_KEY, BUILDER_SECRET, and BUILDER_PASSPHRASE")
+}
+
+// runTelegramBot starts the Telegram bot interface
+func runTelegramBot() {
+	log.SetFlags(log.Ltime | log.Lshortfile)
+	log.Println("Starting Polywatch Telegram Bot...")
+
+	// Load bot token from environment
+	token := os.Getenv("TELEGRAM_BOT_TOKEN")
+	if token == "" {
+		log.Fatal("TELEGRAM_BOT_TOKEN environment variable is required for --telegram mode")
+	}
+
+	// Database path (optional, defaults to ./data/polywatch.db)
+	dbPath := os.Getenv("DATABASE_PATH")
+	if dbPath == "" {
+		dbPath = "./data/polywatch.db"
+	}
+
+	// Initialize database
+	dbConfig := storage.Config{
+		Path:         dbPath,
+		MaxOpenConns: 10,
+		MaxIdleConns: 5,
+	}
+
+	db, err := storage.Open(dbConfig)
+	if err != nil {
+		log.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+	log.Printf("Database initialized: %s", dbPath)
+
+	// Create bot configuration
+	botConfig := telegram.BotConfig{
+		Token:          token,
+		Debug:          os.Getenv("DEBUG") == "true",
+		SessionTimeout: 30, // minutes
+	}
+
+	// Initialize bot
+	bot, err := telegram.NewBot(botConfig, db)
+	if err != nil {
+		log.Fatalf("Failed to create bot: %v", err)
+	}
+
+	// Create context with cancellation
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Handle shutdown signals
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		sig := <-sigCh
+		log.Printf("Received signal: %v, shutting down...", sig)
+		cancel()
+	}()
+
+	// Start the bot
+	log.Println("Bot is running. Press Ctrl+C to stop.")
+	if err := bot.Start(ctx); err != nil {
+		log.Printf("Bot stopped: %v", err)
+	}
+
+	log.Println("Polywatch Telegram Bot stopped.")
+}
+
+// printUsage displays usage information
+func printUsage() {
+	fmt.Println(`Polywatch - Polymarket Insider Trading Monitor
+
+Usage:
+  polywatch [flags]
+
+Modes:
+  --telegram        Run the Telegram bot interface (recommended for most users)
+  --monitor         Run the CLI monitor (Listener + Analyst)
+  --executor        Run the CLI executor (trade execution)
+  --create-api-key  Generate API credentials
+
+Examples:
+  # Run the Telegram bot (requires TELEGRAM_BOT_TOKEN env var)
+  polywatch --telegram
+
+  # Run CLI monitor and executor together
+  polywatch --monitor --executor
+
+  # Run CLI monitor in one terminal, executor in another
+  Terminal 1: polywatch --monitor
+  Terminal 2: polywatch --executor
+
+  # Generate API credentials
+  polywatch --create-api-key
+
+Environment Variables:
+  TELEGRAM_BOT_TOKEN   Required for --telegram mode
+  DATABASE_PATH        SQLite database path (default: ./data/polywatch.db)
+  POLYGON_WS_URL       Polygon WebSocket RPC URL
+  SIGNER_PRIVATE_KEY   Wallet private key for signing
+  FUNDER_ADDRESS       Polymarket proxy wallet address
+  BUILDER_API_KEY      Polymarket API key
+  BUILDER_SECRET       Polymarket API secret
+  BUILDER_PASSPHRASE   Polymarket API passphrase
+
+For more information, see: https://github.com/polywatch/polywatch`)
 }

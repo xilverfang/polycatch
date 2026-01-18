@@ -4,7 +4,9 @@ A high-performance Golang bot that detects "insider" trading signals on Polymark
 
 ## Table of Contents
 
+- [Documentation](#documentation)
 - [Features](#features)
+- [Security](#security)
 - [Prerequisites](#prerequisites)
 - [Installation](#installation)
   - [Installing Go](#installing-go)
@@ -26,6 +28,18 @@ A high-performance Golang bot that detects "insider" trading signals on Polymark
 - [Troubleshooting](#troubleshooting)
 - [Development](#development)
 
+## Documentation
+
+This repo includes a Docusaurus site under `website/`.
+
+Local dev:
+
+```bash
+cd website
+npm install
+npm run start
+```
+
 ## Features
 
 - **Real-time Monitoring**: Monitors Polygon blockchain for high-value USDC.e deposits to Polymarket proxy wallets
@@ -35,6 +49,10 @@ A high-performance Golang bot that detects "insider" trading signals on Polymark
 - **Balance Management**: Interactive mode to specify trade amounts or auto-scaling
 - **Inter-Process Communication**: Run monitor and executor in separate terminals via Unix sockets
 - **L2 Authentication**: Secure API authentication using HMAC-SHA256
+
+## Security
+
+See `SECURITY.md` for how Polywatch stores/encrypts credentials and recommended operational practices.
 
 ## Prerequisites
 
@@ -503,6 +521,8 @@ polywatch/
 - Regularly rotate your API credentials
 - Monitor your account for unauthorized activity
 
+See `SECURITY.md` for the full security guide.
+
 ## License
 
 [MIT]
@@ -511,6 +531,4 @@ polywatch/
 
 
 ---
-
-**Happy Trading! 🚀**
 

@@ -10,6 +10,10 @@ import (
 // CalculateSlippage calculates the slippage percentage between two prices
 // Returns the absolute percentage difference
 func CalculateSlippage(originalPrice, currentPrice string) (float64, error) {
+	if strings.TrimSpace(originalPrice) == "" || strings.TrimSpace(currentPrice) == "" {
+		return 0, nil
+	}
+
 	// Parse prices as floats
 	orig, err := parsePrice(originalPrice)
 	if err != nil {

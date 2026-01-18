@@ -26,18 +26,34 @@ build:
 	@echo "Building $(APP_NAME)..."
 	$(GOBUILD) $(BUILD_FLAGS) -o $(BINARY) $(MAIN_PKG)
 	@echo "Build complete: $(BINARY)"
-	@echo "Run with: ./polywatch --monitor (or --executor, or --create-api-key)"
+	@echo ""
+	@echo "Usage:"
+	@echo "  ./polywatch --telegram        # Run Telegram bot"
+	@echo "  ./polywatch --monitor         # Run CLI monitor"
+	@echo "  ./polywatch --executor        # Run CLI executor"
+	@echo "  ./polywatch --create-api-key  # Generate API credentials"
 
-## run: Run the application
+## run: Run the application (shows usage)
 run:
 	@echo "Running $(APP_NAME)..."
 	$(GOCMD) run $(MAIN_PKG)
+
+## run-telegram: Run the Telegram bot
+run-telegram:
+	@echo "Running Telegram bot..."
+	$(GOCMD) run $(MAIN_PKG) --telegram
+
+## run-monitor: Run the CLI monitor
+run-monitor:
+	@echo "Running CLI monitor..."
+	$(GOCMD) run $(MAIN_PKG) --monitor
 
 ## clean: Remove build artifacts
 clean:
 	@echo "Cleaning..."
 	@rm -f $(APP_NAME)
-	@rm -rf bin/
+	@rm -rf bin/ data/
+	@rm -f *.db *.db-wal *.db-shm
 	@echo "Clean complete"
 
 ## test: Run all tests

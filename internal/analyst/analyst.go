@@ -429,24 +429,28 @@ func (a *Analyst) displayTradeDetails(deposit *types.Deposit, order *types.Order
 	dollarAmount := deposit.ToDollarAmount()
 	dollarStr, _ := dollarAmount.Float64()
 
-	// Parse price to show as percentage
+	// Parse price to show in cents (e.g., 0.991 → 99.1¢)
 	priceFloat, _ := strconv.ParseFloat(order.Price, 64)
-	pricePercent := priceFloat * 100
+	priceCents := priceFloat * 100
 
-	// Determine choice (Yes/No) based on token ID pattern
-	choice := a.determineChoice(order.TokenID)
+	// Use the Outcome from Data API (Yes/No)
+	// If empty, show "Unknown"
+	outcome := order.Outcome
+	if outcome == "" {
+		outcome = "Unknown"
+	}
 
 	// Format as table
-	headers := []string{"Type", "Address", "Side", "Choice", "Price", "Size", "Token ID", "Status", "Deposit"}
+	headers := []string{"Type", "Address", "Side", "Outcome", "Price", "Size", "Market", "Status", "Deposit"}
 	rows := [][]string{
 		{
 			"TRADE DETECTED",
 			deposit.FunderAddress,
 			string(order.Side),
-			choice,
-			fmt.Sprintf("$%.4f (%.2f%%)", priceFloat, pricePercent),
+			outcome,
+			fmt.Sprintf("%.1f¢", priceCents), // Price in cents (e.g., "99.1¢")
 			fmt.Sprintf("%s shares", order.Size),
-			order.TokenID,
+			truncateString(order.Market, 40), // Show market name instead of token ID
 			string(order.Status),
 			fmt.Sprintf("$%.2f", dollarStr),
 		},
@@ -454,13 +458,15 @@ func (a *Analyst) displayTradeDetails(deposit *types.Deposit, order *types.Order
 	log.Print(utils.FormatTable(headers, rows))
 }
 
-// determineChoice attempts to determine if the trade is for Yes or No
-// This is a simplified version - in production, you'd query the market API
-func (a *Analyst) determineChoice(tokenID string) string {
-	// Polymarket token IDs for binary markets typically have patterns
-	// This is a heuristic - for accurate results, query the Gamma API for market data
-	// For now, return "UNKNOWN" - this can be enhanced with market API integration
-	return "UNKNOWN (query market API for Yes/No)"
+// truncateString truncates a string to maxLen and adds "..." if needed
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	if maxLen <= 3 {
+		return s[:maxLen]
+	}
+	return s[:maxLen-3] + "..."
 }
 
 // fetchOrders queries the Data API for trades from a specific user address
@@ -569,18 +575,33 @@ func (a *Analyst) createTradeSignal(ctx context.Context, deposit *types.Deposit,
 		}
 	}
 
+	// Calculate insider amount in USD (size * price)
+	var insiderAmount float64
+	var sizeFloat, priceFloat float64
+	fmt.Sscanf(insiderOrder.Size, "%f", &sizeFloat)
+	fmt.Sscanf(price, "%f", &priceFloat)
+	insiderAmount = sizeFloat * priceFloat
+
 	// Mirror the insider's trade (buy what they buy, sell what they sell)
+	log.Printf("DEBUG | Creating TradeSignal: TokenID=%s, NegRisk=%v, Side=%s",
+		insiderOrder.TokenID, insiderOrder.NegRisk, insiderOrder.Side)
+
 	return &types.TradeSignal{
-		Deposit:      deposit,
-		InsiderOrder: insiderOrder,
-		TokenID:      insiderOrder.TokenID,
-		Side:         insiderOrder.Side, // Mirror the insider's side
-		Price:        price,             // Use CLOB API price if available
-		Size:         insiderOrder.Size,
-		MaxSlippage:  a.config.SlippageTolerance,
-		CreatedAt:    time.Now(),
-		ExecutedAt:   nil,
-		OrderID:      "",
+		Deposit:        deposit,
+		InsiderOrder:   insiderOrder,
+		TokenID:        insiderOrder.TokenID,
+		Side:           insiderOrder.Side, // Mirror the insider's side
+		Market:         insiderOrder.Market,
+		Outcome:        insiderOrder.Outcome,
+		InsiderAddress: insiderOrder.MakerAddress,
+		InsiderAmount:  insiderAmount,
+		NegRisk:        insiderOrder.NegRisk, // Critical: determines which exchange contract to use
+		Price:          price,                // Use CLOB API price if available
+		Size:           insiderOrder.Size,
+		MaxSlippage:    a.config.SlippageTolerance,
+		CreatedAt:      time.Now(),
+		ExecutedAt:     nil,
+		OrderID:        "",
 	}
 }
 
@@ -670,13 +691,18 @@ func (a *Analyst) convertDataAPITrade(trade DataAPITradeResponse) *types.Order {
 		return nil // Skip ended positions
 	}
 
-	// Determine side based on outcome and position
-	// If outcome is "Yes" and we have a position, it's likely a BUY
-	// This is a heuristic - we'll use the asset/conditionId as token ID
-	side := types.OrderSideBuy // Default to BUY for positions
-	if trade.NegativeRisk {
-		// Negative risk might indicate a SELL position
+	// Determine side - use API's side field if available, otherwise infer
+	var side types.OrderSide
+	if strings.EqualFold(trade.Side, "BUY") {
+		side = types.OrderSideBuy
+	} else if strings.EqualFold(trade.Side, "SELL") {
 		side = types.OrderSideSell
+	} else if trade.NegativeRisk {
+		// Negative risk indicates a SELL position
+		side = types.OrderSideSell
+	} else {
+		// Default to BUY for positions
+		side = types.OrderSideBuy
 	}
 
 	// Use asset as token ID (this is the token identifier for the specific outcome)
@@ -688,17 +714,17 @@ func (a *Analyst) convertDataAPITrade(trade DataAPITradeResponse) *types.Order {
 		tokenID = trade.ConditionID
 	}
 
-	// Convert price to string (current price or average price)
-	// The Data API returns curPrice (current market price) and avgPrice (average entry price)
-	// We prefer curPrice as it's the current market price, fallback to avgPrice
-	// If both are 0, use 0.000000 (spreads or newly opened positions may have 0 prices initially)
+	// Convert price to string
+	// Priority: Price (actual entry price) > AvgPrice (average entry) > CurPrice (current market)
+	// The API's "price" field is the actual trade/entry price - use this!
 	var price string
-	if trade.CurPrice > 0 {
-		price = fmt.Sprintf("%.6f", trade.CurPrice)
+	if trade.Price > 0 {
+		price = fmt.Sprintf("%.6f", trade.Price)
 	} else if trade.AvgPrice > 0 {
 		price = fmt.Sprintf("%.6f", trade.AvgPrice)
+	} else if trade.CurPrice > 0 {
+		price = fmt.Sprintf("%.6f", trade.CurPrice)
 	} else {
-		// Both are 0 - use 0.000000 (still send to executor as it's a fresh trade)
 		price = "0.000000"
 	}
 
@@ -716,11 +742,16 @@ func (a *Analyst) convertDataAPITrade(trade DataAPITradeResponse) *types.Order {
 		status = types.OrderStatusFilled // Ended positions are considered filled
 	}
 
+	// Intentionally quiet: this conversion runs frequently and spamming logs harms operator UX.
+
 	return &types.Order{
 		TokenID:       tokenID,
 		Side:          side,
 		Price:         price,
 		Size:          size,
+		Market:        trade.Title,        // Market question from Data API
+		Outcome:       trade.Outcome,      // YES or NO
+		NegRisk:       trade.NegativeRisk, // True if NegRiskCTFExchange should be used
 		MakerAddress:  trade.ProxyWallet,
 		Status:        status,
 		OrderID:       "", // Data API doesn't provide order ID
@@ -792,7 +823,8 @@ type DataAPITradeResponse struct {
 	Asset              string  `json:"asset"`
 	ConditionID        string  `json:"conditionId"`
 	Size               float64 `json:"size"`
-	AvgPrice           float64 `json:"avgPrice"` // Average entry price
+	Price              float64 `json:"price"`    // Actual entry/trade price (PRIMARY)
+	AvgPrice           float64 `json:"avgPrice"` // Average entry price (fallback)
 	InitialValue       float64 `json:"initialValue"`
 	CurrentValue       float64 `json:"currentValue"`
 	CashPnl            float64 `json:"cashPnl"`
@@ -800,7 +832,7 @@ type DataAPITradeResponse struct {
 	TotalBought        float64 `json:"totalBought"`
 	RealizedPnl        float64 `json:"realizedPnl"`
 	PercentRealizedPnl float64 `json:"percentRealizedPnl"`
-	CurPrice           float64 `json:"curPrice"` // Current market price
+	CurPrice           float64 `json:"curPrice"` // Current market price (not entry price!)
 	Redeemable         bool    `json:"redeemable"`
 	Mergeable          bool    `json:"mergeable"`
 	Title              string  `json:"title"`
@@ -813,6 +845,7 @@ type DataAPITradeResponse struct {
 	OppositeAsset      string  `json:"oppositeAsset"`
 	EndDate            string  `json:"endDate"`
 	NegativeRisk       bool    `json:"negativeRisk"`
+	Side               string  `json:"side"` // BUY or SELL from API
 }
 
 // CLOBOrderResponse represents the order structure from Polymarket CLOB API (for order creation)

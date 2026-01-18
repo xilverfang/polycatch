@@ -20,7 +20,7 @@ type Config struct {
 	// Wallet Configuration
 	SignerPrivateKey string
 	FunderAddress    string
-	SignatureType    int // POLY_GNOSIS_SAFE = 2
+	SignatureType    int // 0=EOA, 1=POLY_PROXY (email/Google), 2=POLY_GNOSIS_SAFE (browser wallet)
 
 	// Polymarket Builder API Credentials
 	BuilderAPIKey     string
@@ -48,7 +48,7 @@ type Config struct {
 // Load reads configuration from environment variables and .env file
 func Load() (*Config, error) {
 	// Load .env file if it exists
-	if err := loadEnvFile(".env"); err != nil {
+	if err := LoadEnvFile(".env"); err != nil {
 		// Don't fail if .env doesn't exist, just log
 		// Environment variables can still be set manually
 	}
@@ -56,7 +56,7 @@ func Load() (*Config, error) {
 		PolygonWSSURL:          getEnv("POLYGON_WSS_URL", ""),
 		ChainID:                137, // Polygon mainnet
 		USDCContract:           "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
-		SignatureType:          2, // POLY_GNOSIS_SAFE
+		SignatureType:          1, // POLY_PROXY (email/Google login) - change to 2 for browser wallet, 0 for EOA
 		GammaAPIURL:            "https://gamma-api.polymarket.com",
 		DataAPIURL:             "https://data-api.polymarket.com",
 		CLOBAPIURL:             "https://clob.polymarket.com",
@@ -171,8 +171,9 @@ func (c *Config) Validate() error {
 		errs = append(errs, "ChainID must be 137 (Polygon mainnet)")
 	}
 
-	if c.SignatureType != 2 {
-		errs = append(errs, "SignatureType must be 2 (POLY_GNOSIS_SAFE)")
+	// SignatureType: 0=EOA, 1=POLY_PROXY (email/Google login), 2=POLY_GNOSIS_SAFE (browser wallet)
+	if c.SignatureType < 0 || c.SignatureType > 2 {
+		errs = append(errs, "SignatureType must be 0 (EOA), 1 (POLY_PROXY), or 2 (POLY_GNOSIS_SAFE)")
 	}
 
 	if len(errs) > 0 {
@@ -182,8 +183,9 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// loadEnvFile loads environment variables from a .env file
-func loadEnvFile(filename string) error {
+// LoadEnvFile loads environment variables from a .env file.
+// Call this at the start of main() to ensure all env vars are available.
+func LoadEnvFile(filename string) error {
 	file, err := os.Open(filename)
 	if err != nil {
 		return err // File doesn't exist, which is okay
