@@ -17,10 +17,10 @@ import (
 
 	"github.com/ethereum/go-ethereum/crypto"
 
-	"github.com/polywatch/internal/config"
-	"github.com/polywatch/internal/ipc"
-	"github.com/polywatch/internal/types"
-	"github.com/polywatch/internal/utils"
+	"github.com/polycatch/internal/config"
+	"github.com/polycatch/internal/ipc"
+	"github.com/polycatch/internal/types"
+	"github.com/polycatch/internal/utils"
 )
 
 // WatchedAddress tracks an address we're monitoring for trades

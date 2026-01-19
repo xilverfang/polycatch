@@ -6,11 +6,11 @@ import (
 )
 
 // GetDefaultSocketPath returns the default Unix domain socket path
-// Uses /tmp/polywatch-signals.sock on Unix systems
+// Uses /tmp/polycatch-signals.sock on Unix systems
 func GetDefaultSocketPath() string {
 	// Use /tmp for Unix systems (macOS, Linux)
 	// This ensures the socket is accessible and cleaned up on reboot
-	return filepath.Join(os.TempDir(), "polywatch-signals.sock")
+	return filepath.Join(os.TempDir(), "polycatch-signals.sock")
 }
 
 // EnsureSocketDir ensures the directory for the socket file exists

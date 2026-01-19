@@ -11,14 +11,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/polywatch/internal/analyst"
-	"github.com/polywatch/internal/apikey"
-	"github.com/polywatch/internal/config"
-	"github.com/polywatch/internal/executor"
-	"github.com/polywatch/internal/listener"
-	"github.com/polywatch/internal/storage"
-	"github.com/polywatch/internal/telegram"
-	"github.com/polywatch/internal/utils"
+	"github.com/polycatch/internal/analyst"
+	"github.com/polycatch/internal/apikey"
+	"github.com/polycatch/internal/config"
+	"github.com/polycatch/internal/executor"
+	"github.com/polycatch/internal/listener"
+	"github.com/polycatch/internal/storage"
+	"github.com/polycatch/internal/telegram"
+	"github.com/polycatch/internal/utils"
 )
 
 func main() {
@@ -257,7 +257,7 @@ func runTelegramBot() {
 	// Database path (optional, defaults to ./data/polywatch.db)
 	dbPath := os.Getenv("DATABASE_PATH")
 	if dbPath == "" {
-		dbPath = "./data/polywatch.db"
+		dbPath = "./data/polycatch.db"
 	}
 
 	// Initialize database

@@ -6,9 +6,9 @@ import (
 	"log"
 	"sync"
 
-	"github.com/polywatch/internal/config"
-	"github.com/polywatch/internal/listener"
-	"github.com/polywatch/internal/types"
+	"github.com/polycatch/internal/config"
+	"github.com/polycatch/internal/listener"
+	"github.com/polycatch/internal/types"
 )
 
 // SharedListener manages a single websocket connection shared by all monitors.

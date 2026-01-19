@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/polywatch/internal/crypto"
+	"github.com/polycatch/internal/crypto"
 )
 
 // UserRepository handles user data operations

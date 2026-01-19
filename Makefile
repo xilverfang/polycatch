@@ -1,7 +1,7 @@
 .PHONY: build run clean test install deps help
 
 # Application name
-APP_NAME := polywatch
+APP_NAME := polycatch
 BINARY := ./$(APP_NAME)
 
 # Go parameters
@@ -16,22 +16,22 @@ LDFLAGS := -s -w
 BUILD_FLAGS := -ldflags "$(LDFLAGS)"
 
 # Main package path
-MAIN_PKG := ./cmd/polywatch
+MAIN_PKG := ./cmd/polycatch
 
 # Default target
 .DEFAULT_GOAL := help
 
-## build: Build the application binary to ./polywatch
+## build: Build the application binary to ./polycatch
 build:
 	@echo "Building $(APP_NAME)..."
 	$(GOBUILD) $(BUILD_FLAGS) -o $(BINARY) $(MAIN_PKG)
 	@echo "Build complete: $(BINARY)"
 	@echo ""
 	@echo "Usage:"
-	@echo "  ./polywatch --telegram        # Run Telegram bot"
-	@echo "  ./polywatch --monitor         # Run CLI monitor"
-	@echo "  ./polywatch --executor        # Run CLI executor"
-	@echo "  ./polywatch --create-api-key  # Generate API credentials"
+	@echo "  ./polycatch --telegram        # Run Telegram bot"
+	@echo "  ./polycatch --monitor         # Run CLI monitor"
+	@echo "  ./polycatch --executor        # Run CLI executor"
+	@echo "  ./polycatch --create-api-key  # Generate API credentials"
 
 ## run: Run the application (shows usage)
 run:

@@ -9,7 +9,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/polywatch/internal/types"
+	"github.com/polycatch/internal/types"
 )
 
 // Reader handles reading TradeSignals from a Unix domain socket

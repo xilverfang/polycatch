@@ -3,7 +3,7 @@ package telegram
 import (
 	"bytes"
 
-	"github.com/polywatch/internal/crypto"
+	"github.com/polycatch/internal/crypto"
 )
 
 func secureBufferFromString(value string) *crypto.SecureBuffer {

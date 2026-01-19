@@ -7,7 +7,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/polywatch/internal/storage"
+	"github.com/polycatch/internal/storage"
 )
 
 // DecryptedCredentials holds decrypted user credentials in memory

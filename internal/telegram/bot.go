@@ -11,8 +11,8 @@ import (
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
-	"github.com/polywatch/internal/crypto"
-	"github.com/polywatch/internal/storage"
+	"github.com/polycatch/internal/crypto"
+	"github.com/polycatch/internal/storage"
 )
 
 // BotConfig contains bot configuration options

@@ -9,9 +9,9 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	"github.com/polywatch/internal/executor"
-	"github.com/polywatch/internal/storage"
-	"github.com/polywatch/internal/types"
+	"github.com/polycatch/internal/executor"
+	"github.com/polycatch/internal/storage"
+	"github.com/polycatch/internal/types"
 )
 
 // cmdStart handles the /start command

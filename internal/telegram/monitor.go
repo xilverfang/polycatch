@@ -12,10 +12,10 @@ import (
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
-	"github.com/polywatch/internal/analyst"
-	"github.com/polywatch/internal/config"
-	"github.com/polywatch/internal/executor"
-	"github.com/polywatch/internal/types"
+	"github.com/polycatch/internal/analyst"
+	"github.com/polycatch/internal/config"
+	"github.com/polycatch/internal/executor"
+	"github.com/polycatch/internal/types"
 )
 
 // Monitor limits - configurable via environment variables

@@ -11,8 +11,8 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	"github.com/polywatch/internal/crypto"
-	"github.com/polywatch/internal/types"
+	"github.com/polycatch/internal/crypto"
+	"github.com/polycatch/internal/types"
 )
 
 // CryptoTradeState holds the state for a pending crypto trade

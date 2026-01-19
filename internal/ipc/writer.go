@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/polywatch/internal/types"
+	"github.com/polycatch/internal/types"
 )
 
 // Writer handles writing TradeSignals to a Unix domain socket

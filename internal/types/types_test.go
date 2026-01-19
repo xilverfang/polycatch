@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/polywatch/internal/utils"
+	"github.com/polycatch/internal/utils"
 )
 
 func TestTransfer_IsHighValue(t *testing.T) {

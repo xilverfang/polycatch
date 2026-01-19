@@ -5,7 +5,7 @@ import (
 	"math/big"
 	"time"
 
-	"github.com/polywatch/internal/types"
+	"github.com/polycatch/internal/types"
 )
 
 // tradeSignalJSON is a JSON-serializable version of TradeSignal

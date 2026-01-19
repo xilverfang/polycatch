@@ -13,8 +13,8 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 
-	"github.com/polywatch/internal/config"
-	"github.com/polywatch/internal/types"
+	"github.com/polycatch/internal/config"
+	"github.com/polycatch/internal/types"
 )
 
 // Listener monitors USDC.e transfers on Polygon and emits Deposit signals

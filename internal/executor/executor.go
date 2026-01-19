@@ -32,11 +32,11 @@ import (
 	"github.com/polymarket/go-order-utils/pkg/builder"
 	"github.com/polymarket/go-order-utils/pkg/model"
 
-	"github.com/polywatch/internal/cache"
-	"github.com/polywatch/internal/config"
-	"github.com/polywatch/internal/ipc"
-	"github.com/polywatch/internal/types"
-	"github.com/polywatch/internal/utils"
+	"github.com/polycatch/internal/cache"
+	"github.com/polycatch/internal/config"
+	"github.com/polycatch/internal/ipc"
+	"github.com/polycatch/internal/types"
+	"github.com/polycatch/internal/utils"
 )
 
 // generateRandomSalt generates a random salt within 2^32 range

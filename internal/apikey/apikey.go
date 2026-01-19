@@ -14,7 +14,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/polywatch/internal/config"
+	"github.com/polycatch/internal/config"
 )
 
 // APIKeyResponse represents the response from the API key creation endpoint
