@@ -20,7 +20,7 @@ func (b *Bot) cmdStart(ctx context.Context, chatID int64, userID int64, username
 
 	var text string
 	if exists {
-		text = `👋 <b>Welcome back to Polywatch!</b>
+		text = `👋 <b>Welcome back to Polycatch!</b>
 
 You already have an account set up.
 
@@ -31,9 +31,9 @@ You already have an account set up.
 
 Need help? Use /help for all commands.`
 	} else {
-		text = `🔮 <b>Welcome to Polywatch!</b>
+		text = `🔮 <b>Welcome to Polycatch!</b>
 
-Polywatch monitors high-value deposits on Polymarket and helps you copy insider trades with one tap.
+Polycatch monitors high-value deposits on Polymarket and helps you copy insider trades with one tap.
 
 <b>How it works:</b>
 1️⃣ Set up your account with /setup
@@ -56,7 +56,7 @@ Ready to start? Use /setup to create your account.`
 
 // cmdHelp handles the /help command
 func (b *Bot) cmdHelp(ctx context.Context, chatID int64) {
-	text := `📚 <b>Polywatch Commands</b>
+	text := `📚 <b>Polycatch Commands</b>
 
 <b>Account</b>
 /setup - Create your account
@@ -750,7 +750,7 @@ func (b *Bot) handleDeleteConfirm(ctx context.Context, chatID int64, userID int6
 
 Your account and all associated data have been permanently deleted.
 
-Thank you for using Polywatch. Use /start if you ever want to return.`)
+Thank you for using Polycatch. Use /start if you ever want to return.`)
 }
 
 // handleSettingsCallback handles settings button callbacks

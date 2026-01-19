@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum"
@@ -25,6 +26,13 @@ type Listener struct {
 	errorsCh   chan error
 	stopCh     chan struct{}
 	running    bool
+
+	// lastProcessedBlock tracks the highest block number successfully processed.
+	// It is used for catch-up after reconnects.
+	lastProcessedBlock uint64
+
+	blockTimeMu    sync.Mutex
+	blockTimeCache map[uint64]time.Time
 }
 
 // New creates a new Listener instance
@@ -39,6 +47,8 @@ func New(cfg *config.Config) (*Listener, error) {
 		errorsCh:   make(chan error, 10),           // Buffered channel for errors
 		stopCh:     make(chan struct{}),
 		running:    false,
+		// Cache block timestamps to avoid a header lookup per log (many transfers share a block).
+		blockTimeCache: make(map[uint64]time.Time),
 	}, nil
 }
 
@@ -96,15 +106,9 @@ func (l *Listener) monitor(ctx context.Context) {
 	transferEventSig := []byte("Transfer(address,address,uint256)")
 	transferEventHash := common.BytesToHash(crypto.Keccak256(transferEventSig))
 
-	// Get the latest block to start from
-	header, err := l.client.HeaderByNumber(ctx, nil)
-	if err != nil {
-		l.errorsCh <- fmt.Errorf("failed to get latest block: %w", err)
-		return
-	}
-	fromBlock := header.Number
-
-	// Reconnection loop
+	// Reconnection loop: subscribe to logs via WebSocket and process them as a stream.
+	// This avoids per-block FilterLogs calls (and the associated provider "invalid block range params"
+	// failures), while still preserving BlockNumber/TxHash and accurate timestamps.
 	for {
 		select {
 		case <-ctx.Done():
@@ -112,32 +116,44 @@ func (l *Listener) monitor(ctx context.Context) {
 		case <-l.stopCh:
 			return
 		default:
-			// Monitor for new blocks
-			if err := l.watchBlocks(ctx, contractAddress, transferEventHash, fromBlock); err != nil {
-				l.errorsCh <- fmt.Errorf("error watching blocks: %w", err)
-				// Wait before reconnecting
-				time.Sleep(5 * time.Second)
-				// Reconnect
-				client, err := ethclient.Dial(l.config.PolygonWSSURL)
-				if err != nil {
-					l.errorsCh <- fmt.Errorf("failed to reconnect: %w", err)
-					time.Sleep(10 * time.Second)
-					continue
-				}
-				l.client.Close()
-				l.client = client
+		}
+
+		if err := l.subscribeAndProcessLogs(ctx, contractAddress, transferEventHash); err != nil {
+			l.errorsCh <- fmt.Errorf("error subscribing to logs: %w", err)
+			time.Sleep(5 * time.Second)
+
+			client, dialErr := ethclient.Dial(l.config.PolygonWSSURL)
+			if dialErr != nil {
+				l.errorsCh <- fmt.Errorf("failed to reconnect: %w", dialErr)
+				time.Sleep(10 * time.Second)
+				continue
 			}
+			if l.client != nil {
+				l.client.Close()
+			}
+			l.client = client
 		}
 	}
 }
 
-// watchBlocks watches for new blocks and processes Transfer events
-func (l *Listener) watchBlocks(ctx context.Context, contractAddress common.Address, transferEventHash common.Hash, fromBlock *big.Int) error {
-	// Subscribe to new block headers
-	headers := make(chan *ethtypes.Header)
-	sub, err := l.client.SubscribeNewHead(ctx, headers)
+func (l *Listener) subscribeAndProcessLogs(ctx context.Context, contractAddress common.Address, transferEventHash common.Hash) error {
+	// On reconnect we may have missed logs; do an explicit catch-up based on lastProcessedBlock.
+	// This is not a per-block polling strategy: it runs only on (re)subscribe boundaries.
+	if err := l.catchUpMissedLogs(ctx, contractAddress, transferEventHash); err != nil {
+		return fmt.Errorf("failed to catch up missed logs: %w", err)
+	}
+
+	logsCh := make(chan ethtypes.Log, 256)
+	query := ethereum.FilterQuery{
+		Addresses: []common.Address{contractAddress},
+		Topics: [][]common.Hash{
+			{transferEventHash},
+		},
+	}
+
+	sub, err := l.client.SubscribeFilterLogs(ctx, query, logsCh)
 	if err != nil {
-		return fmt.Errorf("failed to subscribe to new headers: %w", err)
+		return fmt.Errorf("failed to subscribe to filter logs: %w", err)
 	}
 	defer sub.Unsubscribe()
 
@@ -148,72 +164,157 @@ func (l *Listener) watchBlocks(ctx context.Context, contractAddress common.Addre
 		case <-l.stopCh:
 			return nil
 		case err := <-sub.Err():
-			return fmt.Errorf("subscription error: %w", err)
-		case header := <-headers:
-			// Process this block using event filtering (more efficient and avoids transaction type issues)
-			if err := l.processBlockEvents(ctx, contractAddress, transferEventHash, header.Number); err != nil {
-				l.errorsCh <- fmt.Errorf("error processing block %d: %w", header.Number.Uint64(), err)
-				// Continue processing other blocks
-				continue
+			return fmt.Errorf("log subscription error: %w", err)
+		case ev, ok := <-logsCh:
+			if !ok {
+				return errors.New("log subscription channel closed")
 			}
-			fromBlock = header.Number
+			if err := l.processTransferLog(ctx, &ev); err != nil {
+				// Surface the error but keep the stream alive; individual logs can fail parsing/lookup.
+				l.errorsCh <- err
+			}
 		}
 	}
 }
 
-// processBlockEvents processes Transfer events in a specific block using event filtering
-// This is more efficient and avoids transaction type decoding issues
-func (l *Listener) processBlockEvents(ctx context.Context, contractAddress common.Address, transferEventHash common.Hash, blockNumber *big.Int) error {
-	// Get block header for timestamp (without full transaction details)
-	header, err := l.client.HeaderByNumber(ctx, blockNumber)
+func (l *Listener) processTransferLog(ctx context.Context, ev *ethtypes.Log) error {
+	if ev == nil {
+		return errors.New("log event cannot be nil")
+	}
+	if len(ev.Topics) < 3 {
+		return nil
+	}
+
+	// Parse without a header first (timestamp set later only for relevant transfers).
+	transfer, err := l.parseTransferEventFromLog(ev, nil)
 	if err != nil {
-		return fmt.Errorf("failed to get block header: %w", err)
+		return fmt.Errorf("failed to parse transfer event from log (tx=%s idx=%d): %w", ev.TxHash.Hex(), ev.Index, err)
 	}
 
-	// Use FilterLogs to get Transfer events directly (avoids transaction type issues)
-	query := ethereum.FilterQuery{
-		FromBlock: blockNumber,
-		ToBlock:   blockNumber,
-		Addresses: []common.Address{contractAddress},
-		Topics: [][]common.Hash{
-			{transferEventHash}, // Transfer event signature
-		},
+	// Fast reject before any additional RPC calls (contract checks / timestamp lookups).
+	if !transfer.IsHighValue(l.config.MinDepositAmount) {
+		l.updateLastProcessedBlock(ev.BlockNumber)
+		return nil
+	}
+	if !l.isRelevantTransfer(ctx, transfer) {
+		l.updateLastProcessedBlock(ev.BlockNumber)
+		return nil
 	}
 
-	logs, err := l.client.FilterLogs(ctx, query)
+	ts, err := l.getBlockTimestamp(ctx, ev.BlockNumber)
 	if err != nil {
-		return fmt.Errorf("failed to filter logs: %w", err)
+		return fmt.Errorf("failed to fetch block timestamp for block %d: %w", ev.BlockNumber, err)
 	}
+	transfer.Timestamp = ts
 
-	// Process each Transfer event log
-	for _, log := range logs {
-		// Verify this is a Transfer event (should have 3 topics: event sig, from, to)
-		if len(log.Topics) < 3 {
-			continue
+	deposit := transfer.ToDeposit()
+	select {
+	case l.depositsCh <- deposit:
+		l.updateLastProcessedBlock(ev.BlockNumber)
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-l.stopCh:
+		return nil
+	default:
+		l.updateLastProcessedBlock(ev.BlockNumber)
+		return errors.New("deposits channel is full, dropping deposit")
+	}
+}
+
+func (l *Listener) updateLastProcessedBlock(blockNumber uint64) {
+	// Single goroutine updates in practice, but keep it correct if that changes later.
+	if blockNumber > l.lastProcessedBlock {
+		l.lastProcessedBlock = blockNumber
+	}
+}
+
+func (l *Listener) getBlockTimestamp(ctx context.Context, blockNumber uint64) (time.Time, error) {
+	l.blockTimeMu.Lock()
+	if ts, ok := l.blockTimeCache[blockNumber]; ok {
+		l.blockTimeMu.Unlock()
+		return ts, nil
+	}
+	l.blockTimeMu.Unlock()
+
+	// Retry a few times for robustness; header lookups can be transiently unavailable on some providers.
+	const maxAttempts = 3
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		header, err := l.client.HeaderByNumber(ctx, new(big.Int).SetUint64(blockNumber))
+		if err == nil && header != nil && header.Time > 0 {
+			ts := time.Unix(int64(header.Time), 0)
+			l.blockTimeMu.Lock()
+			// Prevent unbounded growth; transfers are rare enough that a simple cap is sufficient.
+			if len(l.blockTimeCache) > 4096 {
+				l.blockTimeCache = make(map[uint64]time.Time)
+			}
+			l.blockTimeCache[blockNumber] = ts
+			l.blockTimeMu.Unlock()
+			return ts, nil
 		}
-
-		// Parse Transfer event
-		transfer, err := l.parseTransferEventFromLog(&log, header)
 		if err != nil {
-			continue // Skip invalid events
+			lastErr = err
+		} else {
+			lastErr = errors.New("header missing timestamp")
+		}
+		time.Sleep(time.Duration(attempt) * 150 * time.Millisecond)
+	}
+	return time.Time{}, lastErr
+}
+
+func (l *Listener) catchUpMissedLogs(ctx context.Context, contractAddress common.Address, transferEventHash common.Hash) error {
+	// Nothing to catch up on first start.
+	if l.lastProcessedBlock == 0 {
+		return nil
+	}
+
+	head, err := l.client.HeaderByNumber(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to get latest block header: %w", err)
+	}
+	if head == nil || head.Number == nil {
+		return errors.New("latest block header is missing number")
+	}
+	headNum := head.Number.Uint64()
+	if headNum <= l.lastProcessedBlock {
+		return nil
+	}
+
+	from := l.lastProcessedBlock + 1
+	to := headNum
+
+	// Chunk to avoid provider limits on eth_getLogs ranges.
+	const maxBlockSpan uint64 = 2000
+	for start := from; start <= to; {
+		end := start + maxBlockSpan - 1
+		if end > to {
+			end = to
 		}
 
-		// Check if transfer is to a contract address (Polymarket proxy) and is high-value
-		if l.isRelevantTransfer(ctx, transfer) {
-			deposit := transfer.ToDeposit()
-			select {
-			case l.depositsCh <- deposit:
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-l.stopCh:
-				return nil
-			default:
-				// Channel full, log error but continue
-				l.errorsCh <- errors.New("deposits channel is full, dropping deposit")
+		query := ethereum.FilterQuery{
+			FromBlock: new(big.Int).SetUint64(start),
+			ToBlock:   new(big.Int).SetUint64(end),
+			Addresses: []common.Address{contractAddress},
+			Topics: [][]common.Hash{
+				{transferEventHash},
+			},
+		}
+
+		logs, err := l.client.FilterLogs(ctx, query)
+		if err != nil {
+			return fmt.Errorf("failed to filter logs (from=%d to=%d): %w", start, end, err)
+		}
+
+		for i := range logs {
+			ev := logs[i]
+			if err := l.processTransferLog(ctx, &ev); err != nil {
+				l.errorsCh <- err
 			}
 		}
-	}
 
+		start = end + 1
+	}
 	return nil
 }
 
@@ -238,8 +339,9 @@ func (l *Listener) parseTransferEventFromLog(log *ethtypes.Log, header *ethtypes
 	}
 	value := new(big.Int).SetBytes(log.Data)
 
-	// Get block timestamp from header
-	timestamp := time.Now() // Fallback
+	// Get block timestamp from header (if provided).
+	// When streaming logs via subscription, the timestamp is populated separately using a header lookup.
+	var timestamp time.Time
 	if header != nil && header.Time > 0 {
 		timestamp = time.Unix(int64(header.Time), 0)
 	}

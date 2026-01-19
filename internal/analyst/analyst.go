@@ -490,7 +490,7 @@ func (a *Analyst) tryFetchOrders(ctx context.Context, url string) ([]*types.Orde
 	// Set headers
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "polywatch/1.0")
+	req.Header.Set("User-Agent", "polycatch/1.0")
 
 	// Make request
 	resp, err := a.client.Do(req)

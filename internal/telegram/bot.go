@@ -1,4 +1,4 @@
-// Package telegram provides the Telegram bot interface for Polywatch.
+// Package telegram provides the Telegram bot interface for Polycatch.
 package telegram
 
 import (

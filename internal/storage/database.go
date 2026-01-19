@@ -12,7 +12,7 @@ import (
 	_ "github.com/mattn/go-sqlite3" // SQLite driver
 )
 
-// Database wraps the SQLite connection with Polywatch-specific functionality
+// Database wraps the SQLite connection with Polycatch-specific functionality
 type Database struct {
 	db     *sql.DB
 	path   string
@@ -38,7 +38,7 @@ type Config struct {
 // DefaultConfig returns the default database configuration
 func DefaultConfig() Config {
 	return Config{
-		Path:            "./polywatch.db",
+		Path:            "./polycatch.db",
 		MaxOpenConns:    10,
 		MaxIdleConns:    5,
 		ConnMaxLifetime: time.Hour,

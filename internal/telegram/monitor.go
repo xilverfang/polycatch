@@ -39,7 +39,7 @@ func getEnvInt(key string, defaultVal int) int {
 	return defaultVal
 }
 
-// UserMonitor manages Polywatch instances for a single user
+// UserMonitor manages Polycatch instances for a single user
 type UserMonitor struct {
 	userID     int64
 	chatID     int64

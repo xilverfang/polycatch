@@ -13,7 +13,7 @@ func testDB(t *testing.T) (*Database, func()) {
 	t.Helper()
 
 	// Create temp file
-	f, err := os.CreateTemp("", "polywatch_test_*.db")
+	f, err := os.CreateTemp("", "polycatch_test_*.db")
 	if err != nil {
 		t.Fatalf("Failed to create temp file: %v", err)
 	}

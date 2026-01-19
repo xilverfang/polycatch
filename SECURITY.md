@@ -1,6 +1,6 @@
 ## Security Guide
 
-This document describes how Polywatch protects user data and how to operate it safely in production.
+This document describes how Polycatch protects user data and how to operate it safely in production.
 
 ## What We Store
 

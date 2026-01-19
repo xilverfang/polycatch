@@ -1,4 +1,4 @@
-// Package storage provides database models and repository patterns for Polywatch.
+// Package storage provides database models and repository patterns for Polycatch.
 package storage
 
 import (
@@ -90,7 +90,7 @@ type UserSettings struct {
 // DefaultSettings returns the default user settings
 func DefaultSettings() UserSettings {
 	return UserSettings{
-		MinDepositAmount:  10000, // $10,000
+		MinDepositAmount:  50000, // $10,000
 		SlippageTolerance: 3.0,   // 3%
 		MinTradeAmount:    1.0,   // $1
 		MaxTradePercent:   100,   // 100% of balance

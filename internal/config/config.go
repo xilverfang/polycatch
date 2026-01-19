@@ -73,7 +73,7 @@ func Load() (*Config, error) {
 	cfg.BuilderPassphrase = getEnv("BUILDER_PASSPHRASE", "")
 
 	// Optional: Minimum deposit amount (default $10,000)
-	minDepositStr := getEnv("MIN_DEPOSIT_AMOUNT", "10000")
+	minDepositStr := getEnv("MIN_DEPOSIT_AMOUNT", "50000")
 	minDeposit, err := parseUSDCAmount(minDepositStr)
 	if err != nil {
 		return nil, fmt.Errorf("invalid MIN_DEPOSIT_AMOUNT: %w", err)

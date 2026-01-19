@@ -40,7 +40,7 @@ Use /delete if you want to start fresh.`)
 
 	text := `🔐 <b>Account Setup</b>
 
-Let's set up your Polywatch account securely. This takes about 2 minutes.
+Let's set up your Polycatch account securely. This takes about 2 minutes.
 
 <b>Step 1/4: Encryption Password</b>
 
@@ -358,7 +358,7 @@ Your credentials have been securely encrypted and saved.
 • If you forget it, you'll need to /delete and /setup again
 • Sessions auto-lock after 30 minutes
 
-Welcome to Polywatch! 🔮`
+Welcome to Polycatch! 🔮`
 
 	b.sendMessage(chatID, text)
 }

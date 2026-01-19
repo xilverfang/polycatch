@@ -61,7 +61,7 @@ func main() {
 	divisor := big.NewFloat(1_000_000)
 	amountFloat.Quo(amountFloat, divisor)
 	dollarAmount, _ := amountFloat.Float64()
-	log.Printf("Starting Polywatch | Contract: %s | Min deposit: $%.2f", cfg.USDCContract, dollarAmount)
+	log.Printf("Starting Polycatch | Contract: %s | Min deposit: $%.2f", cfg.USDCContract, dollarAmount)
 
 	// Create context for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
@@ -134,7 +134,7 @@ func main() {
 			}
 			log.Println("Executor active | Running in standalone mode")
 			log.Println("  - Waiting for monitor to connect via Unix socket")
-			log.Println("  - Monitor should be running in another terminal with: ./polywatch --monitor")
+			log.Println("  - Monitor should be running in another terminal with: ./polycatch --monitor")
 			log.Println("  - Signals will be received in real-time via IPC")
 		}
 
@@ -246,7 +246,7 @@ func handleCreateAPIKey(cfg *config.Config) {
 // runTelegramBot starts the Telegram bot interface
 func runTelegramBot() {
 	log.SetFlags(log.Ltime | log.Lshortfile)
-	log.Println("Starting Polywatch Telegram Bot...")
+	log.Println("Starting Polycatch Telegram Bot...")
 
 	// Load bot token from environment
 	token := os.Getenv("TELEGRAM_BOT_TOKEN")
@@ -254,7 +254,7 @@ func runTelegramBot() {
 		log.Fatal("TELEGRAM_BOT_TOKEN environment variable is required for --telegram mode")
 	}
 
-	// Database path (optional, defaults to ./data/polywatch.db)
+	// Database path (optional, defaults to ./data/polycatch.db)
 	dbPath := os.Getenv("DATABASE_PATH")
 	if dbPath == "" {
 		dbPath = "./data/polycatch.db"
@@ -307,15 +307,15 @@ func runTelegramBot() {
 		log.Printf("Bot stopped: %v", err)
 	}
 
-	log.Println("Polywatch Telegram Bot stopped.")
+	log.Println("Polycatch Telegram Bot stopped.")
 }
 
 // printUsage displays usage information
 func printUsage() {
-	fmt.Println(`Polywatch - Polymarket Insider Trading Monitor
+	fmt.Println(`Polycatch - Polymarket Insider Trading Monitor
 
 Usage:
-  polywatch [flags]
+  polycatch [flags]
 
 Modes:
   --telegram        Run the Telegram bot interface (recommended for most users)
@@ -325,21 +325,21 @@ Modes:
 
 Examples:
   # Run the Telegram bot (requires TELEGRAM_BOT_TOKEN env var)
-  polywatch --telegram
+  polycatch --telegram
 
   # Run CLI monitor and executor together
-  polywatch --monitor --executor
+  polycatch --monitor --executor
 
   # Run CLI monitor in one terminal, executor in another
-  Terminal 1: polywatch --monitor
-  Terminal 2: polywatch --executor
+  Terminal 1: polycatch --monitor
+  Terminal 2: polycatch --executor
 
   # Generate API credentials
-  polywatch --create-api-key
+  polycatch --create-api-key
 
 Environment Variables:
   TELEGRAM_BOT_TOKEN   Required for --telegram mode
-  DATABASE_PATH        SQLite database path (default: ./data/polywatch.db)
+  DATABASE_PATH        SQLite database path (default: ./data/polycatch.db)
   POLYGON_WS_URL       Polygon WebSocket RPC URL
   SIGNER_PRIVATE_KEY   Wallet private key for signing
   FUNDER_ADDRESS       Polymarket proxy wallet address
@@ -347,5 +347,5 @@ Environment Variables:
   BUILDER_SECRET       Polymarket API secret
   BUILDER_PASSPHRASE   Polymarket API passphrase
 
-For more information, see: https://github.com/polywatch/polywatch`)
+For more information, see: https://github.com/polycatch/polycatch`)
 }
