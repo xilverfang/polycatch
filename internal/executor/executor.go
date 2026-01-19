@@ -39,6 +39,133 @@ import (
 	"github.com/polycatch/internal/utils"
 )
 
+type polymarketErrorResponse struct {
+	Error   *string `json:"error"`
+	Message *string `json:"message"`
+	Code    *string `json:"code"`
+}
+
+type polymarketErrorEnvelope struct {
+	Error polymarketErrorResponse `json:"error"`
+}
+
+func truncateForLog(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "...(truncated)"
+}
+
+func sanitizeOrderPayloadForLog(payload []byte) string {
+	// Payload includes signatures; never log them in full.
+	// This is best-effort and intentionally minimal (error-path only).
+	s := string(payload)
+	s = redactJSONStringField(s, `"signature"`)
+	return s
+}
+
+func redactJSONStringField(s string, fieldWithQuotes string) string {
+	// Redacts a JSON string field like: "signature":"...".
+	// fieldWithQuotes should include the surrounding quotes, e.g. `"signature"`.
+	idx := strings.Index(s, fieldWithQuotes)
+	if idx < 0 {
+		return s
+	}
+	// Find the ':' after the field.
+	colon := strings.IndexByte(s[idx+len(fieldWithQuotes):], ':')
+	if colon < 0 {
+		return s
+	}
+	colonIdx := idx + len(fieldWithQuotes) + colon
+	// Find the first quote of the value.
+	firstQuote := strings.IndexByte(s[colonIdx:], '"')
+	if firstQuote < 0 {
+		return s
+	}
+	start := colonIdx + firstQuote
+	// Find the ending quote of the value, naive scan (handles typical compact JSON).
+	end := start + 1
+	for end < len(s) {
+		if s[end] == '"' && s[end-1] != '\\' {
+			break
+		}
+		end++
+	}
+	if end >= len(s) {
+		return s
+	}
+	return s[:start+1] + "***REDACTED***" + s[end:]
+}
+
+func extractPolymarketRequestIDs(h http.Header) map[string]string {
+	ids := map[string]string{}
+	candidates := []string{
+		"X-Request-Id",
+		"X-Request-ID",
+		"X-Amzn-Trace-Id",
+		"CF-Ray",
+		"Cf-Ray",
+	}
+	for _, k := range candidates {
+		if v := strings.TrimSpace(h.Get(k)); v != "" {
+			ids[k] = v
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	return ids
+}
+
+func formatPolymarketAPIErrorBody(body []byte) string {
+	b := strings.TrimSpace(string(body))
+	if b == "" {
+		return ""
+	}
+
+	// Best-effort parse for common error shapes.
+	var env polymarketErrorEnvelope
+	if err := json.Unmarshal(body, &env); err == nil {
+		parts := make([]string, 0, 3)
+		if env.Error.Code != nil && strings.TrimSpace(*env.Error.Code) != "" {
+			parts = append(parts, fmt.Sprintf("code=%s", *env.Error.Code))
+		}
+		if env.Error.Message != nil && strings.TrimSpace(*env.Error.Message) != "" {
+			parts = append(parts, fmt.Sprintf("message=%s", *env.Error.Message))
+		}
+		if env.Error.Error != nil && strings.TrimSpace(*env.Error.Error) != "" {
+			parts = append(parts, fmt.Sprintf("error=%s", *env.Error.Error))
+		}
+		if len(parts) > 0 {
+			return strings.Join(parts, " | ")
+		}
+	}
+
+	// Some endpoints return { "error": "...", "message": "...", "code": "..." }
+	var flat polymarketErrorResponse
+	if err := json.Unmarshal(body, &flat); err == nil {
+		parts := make([]string, 0, 3)
+		if flat.Code != nil && strings.TrimSpace(*flat.Code) != "" {
+			parts = append(parts, fmt.Sprintf("code=%s", *flat.Code))
+		}
+		if flat.Message != nil && strings.TrimSpace(*flat.Message) != "" {
+			parts = append(parts, fmt.Sprintf("message=%s", *flat.Message))
+		}
+		if flat.Error != nil && strings.TrimSpace(*flat.Error) != "" {
+			parts = append(parts, fmt.Sprintf("error=%s", *flat.Error))
+		}
+		if len(parts) > 0 {
+			return strings.Join(parts, " | ")
+		}
+	}
+
+	// Fallback: return a truncated preview, but still include the raw body (it shouldn't contain secrets).
+	return truncateForLog(b, 2000)
+}
+
 // generateRandomSalt generates a random salt within 2^32 range
 // This matches Polymarket's official go-order-utils library
 // Using nanosecond timestamps would exceed JavaScript's safe integer limit
@@ -980,6 +1107,23 @@ func (e *Executor) submitSignedOrderFromLib(ctx context.Context, signal *types.T
 		log.Printf("DEBUG | API Error Response bytes: %d", len(bodyBytes))
 		log.Printf("DEBUG | Request Payload bytes: %d", len(payloadBytes))
 
+		reqIDs := extractPolymarketRequestIDs(resp.Header)
+		if reqIDs != nil {
+			log.Printf("DEBUG | Polymarket response request IDs: %+v", reqIDs)
+		}
+
+		// Log a high-signal summary of the error response for debugging.
+		bodySummary := formatPolymarketAPIErrorBody(bodyBytes)
+		if bodySummary != "" {
+			log.Printf("DEBUG | Polymarket error response summary: %s", bodySummary)
+		}
+
+		// For 4xx errors, also log a sanitized preview of the payload (signatures redacted).
+		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+			payloadPreview := truncateForLog(sanitizeOrderPayloadForLog(payloadBytes), 2000)
+			log.Printf("DEBUG | Polymarket request payload preview (sanitized): %s", payloadPreview)
+		}
+
 		// Enhanced error message for 401 errors
 		if resp.StatusCode == http.StatusUnauthorized {
 			return "", fmt.Errorf("API returned 401 Unauthorized: %s\n"+
@@ -989,17 +1133,15 @@ func (e *Executor) submitSignedOrderFromLib(ctx context.Context, signal *types.T
 				"3. Verify BUILDER_SECRET and BUILDER_PASSPHRASE are correct\n"+
 				"4. Ensure the API key was created using L1 authentication with the correct signer address\n"+
 				"5. Check that POLY_ADDRESS (%s) matches the address used during API key creation",
-				string(bodyBytes), e.signerAddress)
+				truncateForLog(string(bodyBytes), 2000), e.signerAddress)
 		}
 
 		// Enhanced error for 400 errors
 		if resp.StatusCode == http.StatusBadRequest {
-			return "", fmt.Errorf("API returned 400 Bad Request: %s\n"+
-				"Payload sent:\n%s",
-				string(bodyBytes), string(payloadBytes))
+			return "", fmt.Errorf("API returned 400 Bad Request: %s", truncateForLog(string(bodyBytes), 2000))
 		}
 
-		return "", fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(bodyBytes))
+		return "", fmt.Errorf("API returned status %d: %s", resp.StatusCode, truncateForLog(string(bodyBytes), 2000))
 	}
 
 	// Parse response
