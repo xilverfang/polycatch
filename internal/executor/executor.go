@@ -166,6 +166,19 @@ func formatPolymarketAPIErrorBody(body []byte) string {
 	return truncateForLog(b, 2000)
 }
 
+func looksLikeCloudflareBlock(resp *http.Response, body []byte) bool {
+	if resp == nil {
+		return false
+	}
+	ct := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Type")))
+	if strings.Contains(ct, "text/html") {
+		// Cloudflare blocks are HTML pages. We look for common markers.
+		b := strings.ToLower(string(body))
+		return strings.Contains(b, "cloudflare") && (strings.Contains(b, "you have been blocked") || strings.Contains(b, "cf-error-details"))
+	}
+	return false
+}
+
 // generateRandomSalt generates a random salt within 2^32 range
 // This matches Polymarket's official go-order-utils library
 // Using nanosecond timestamps would exceed JavaScript's safe integer limit
@@ -1018,6 +1031,8 @@ func (e *Executor) submitSignedOrderFromLib(ctx context.Context, signal *types.T
 
 	// Set headers with L2 authentication (HMAC-SHA256)
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "polycatch/1.0")
 
 	// Trim whitespace from credentials (common issue when copying from UI)
 	// apiKey is already defined above for the owner field
@@ -1106,10 +1121,22 @@ func (e *Executor) submitSignedOrderFromLib(ctx context.Context, signal *types.T
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		log.Printf("DEBUG | API Error Response bytes: %d", len(bodyBytes))
 		log.Printf("DEBUG | Request Payload bytes: %d", len(payloadBytes))
+		log.Printf("DEBUG | Polymarket response status: %d, content-type: %s", resp.StatusCode, resp.Header.Get("Content-Type"))
 
 		reqIDs := extractPolymarketRequestIDs(resp.Header)
 		if reqIDs != nil {
 			log.Printf("DEBUG | Polymarket response request IDs: %+v", reqIDs)
+		}
+
+		if looksLikeCloudflareBlock(resp, bodyBytes) {
+			return "", fmt.Errorf(
+				"Polymarket request blocked by Cloudflare (status=%d). This is usually due to datacenter IP reputation / bot protection.\n"+
+					"Request IDs: %+v\n"+
+					"Response preview: %s",
+				resp.StatusCode,
+				reqIDs,
+				truncateForLog(strings.TrimSpace(string(bodyBytes)), 800),
+			)
 		}
 
 		// Log a high-signal summary of the error response for debugging.
