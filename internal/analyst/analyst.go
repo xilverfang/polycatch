@@ -563,7 +563,7 @@ func (a *Analyst) createTradeSignal(ctx context.Context, deposit *types.Deposit,
 	// Fetch current price from CLOB API (more accurate than Data API)
 	price := insiderOrder.Price // Fallback to order price if CLOB API fails
 
-	if a.config.BuilderAPIKey != "" && a.signerAddress != "" {
+	if a.config.CLOBAPIKey != "" && a.signerAddress != "" {
 		clobPrice, err := a.getPriceFromCLOB(ctx, insiderOrder.TokenID, insiderOrder.Side)
 		if err == nil && clobPrice != "" && clobPrice != "0.000000" {
 			price = clobPrice
@@ -616,10 +616,10 @@ func (a *Analyst) getPriceFromCLOB(ctx context.Context, tokenID string, side typ
 	}
 
 	// Add L2 authentication headers if credentials are available
-	if a.config.BuilderAPIKey != "" && a.config.BuilderSecret != "" && a.signerAddress != "" {
-		apiKey := strings.TrimSpace(a.config.BuilderAPIKey)
-		apiSecret := strings.TrimSpace(a.config.BuilderSecret)
-		apiPassphrase := strings.TrimSpace(a.config.BuilderPassphrase)
+	if a.config.CLOBAPIKey != "" && a.config.CLOBAPISecret != "" && a.signerAddress != "" {
+		apiKey := strings.TrimSpace(a.config.CLOBAPIKey)
+		apiSecret := strings.TrimSpace(a.config.CLOBAPISecret)
+		apiPassphrase := strings.TrimSpace(a.config.CLOBAPIPassphrase)
 
 		timestamp := strconv.FormatInt(time.Now().Unix(), 10)
 

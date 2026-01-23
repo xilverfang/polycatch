@@ -12,11 +12,14 @@ import (
 
 // DecryptedCredentials holds decrypted user credentials in memory
 type DecryptedCredentials struct {
-	SignerPrivateKey string
-	FunderAddress    string
-	APIKey           string
-	APISecret        string
-	APIPassphrase    string
+	SignerPrivateKey     string
+	FunderAddress        string
+	APIKey               string
+	APISecret            string
+	APIPassphrase        string
+	BuilderAPIKey        string
+	BuilderAPISecret     string
+	BuilderAPIPassphrase string
 }
 
 // cmdUnlock handles the /unlock command
@@ -105,11 +108,14 @@ Try again or use /cancel.`, remainingAttempts))
 
 	// Serialize credentials for session storage
 	credsData, _ := json.Marshal(DecryptedCredentials{
-		SignerPrivateKey: creds.SignerPrivateKey,
-		FunderAddress:    creds.FunderAddress,
-		APIKey:           creds.APIKey,
-		APISecret:        creds.APISecret,
-		APIPassphrase:    creds.APIPassphrase,
+		SignerPrivateKey:     creds.SignerPrivateKey,
+		FunderAddress:        creds.FunderAddress,
+		APIKey:               creds.APIKey,
+		APISecret:            creds.APISecret,
+		APIPassphrase:        creds.APIPassphrase,
+		BuilderAPIKey:        creds.BuilderAPIKey,
+		BuilderAPISecret:     creds.BuilderAPISecret,
+		BuilderAPIPassphrase: creds.BuilderAPIPassphrase,
 	})
 	session.SetCredentials(credsData)
 
@@ -130,9 +136,11 @@ Your session is now active for %d minutes.
 
 <b>Available commands:</b>
 • /monitor - Start watching for trades
+• /approval - Add Builder keys (first-time users)
 • /status - View your account
 • /settings - Modify preferences
 • /trades - View trade history
+• /crypto - Trade crypto 15-min markets
 • /lock - End session early
 
 Happy trading! 📈`, timeout)

@@ -48,6 +48,10 @@ type Bot struct {
 	setupStates map[int64]*SetupState
 	setupMu     sync.RWMutex
 
+	// approvalStates tracks users in the middle of /approval flow
+	approvalStates map[int64]*ApprovalState
+	approvalMu     sync.RWMutex
+
 	// customAmountState tracks users entering custom trade amounts
 	customAmountState map[int64]string // userID -> signalID
 	customAmountMu    sync.RWMutex
@@ -131,6 +135,7 @@ func NewBot(config BotConfig, db *storage.Database) (*Bot, error) {
 		audit:             storage.NewAuditRepository(db),
 		sessions:          crypto.NewSessionManager(sessionTimeout),
 		setupStates:       make(map[int64]*SetupState),
+		approvalStates:    make(map[int64]*ApprovalState),
 		customAmountState: make(map[int64]string),
 		stopCh:            make(chan struct{}),
 		updateQueue:       make(chan tgbotapi.Update, updateQueueSize),
@@ -153,6 +158,7 @@ func (b *Bot) registerBotCommands() {
 		{Command: "start", Description: "Welcome + quick setup info"},
 		{Command: "help", Description: "Show all commands"},
 		{Command: "setup", Description: "Create your account"},
+		{Command: "approval", Description: "Add Builder keys for approvals"},
 		{Command: "unlock", Description: "Start a session"},
 		{Command: "lock", Description: "End your session"},
 		{Command: "status", Description: "View account status"},
@@ -180,6 +186,8 @@ func (b *Bot) Start(ctx context.Context) error {
 
 	// Start cleanup goroutine for expired setup states
 	go b.cleanupSetupStates(ctx)
+	// Start cleanup goroutine for expired approval states
+	go b.cleanupApprovalStates(ctx)
 
 	// Start worker pool
 	workerCount := b.config.WorkerPoolSize
@@ -306,6 +314,12 @@ func (b *Bot) handleUpdate(ctx context.Context, update tgbotapi.Update) {
 		return
 	}
 
+	// Check if user is in approval flow
+	if b.isInApproval(userID) {
+		b.handleApprovalInput(ctx, msg)
+		return
+	}
+
 	// Handle commands
 	if msg.IsCommand() {
 		b.handleCommand(ctx, msg)
@@ -333,6 +347,9 @@ func (b *Bot) handleCommand(ctx context.Context, msg *tgbotapi.Message) {
 
 	case "setup":
 		b.cmdSetup(ctx, chatID, userID)
+
+	case "approval":
+		b.cmdApproval(ctx, chatID, userID)
 
 	case "unlock":
 		b.cmdUnlock(ctx, chatID, userID, msg.CommandArguments())
@@ -451,6 +468,12 @@ func (b *Bot) handleCallback(ctx context.Context, callback *tgbotapi.CallbackQue
 	case "setup_cancel":
 		b.handleSetupConfirm(ctx, chatID, userID, false)
 
+	case "approval_confirm":
+		b.handleApprovalConfirm(ctx, chatID, userID, true)
+
+	case "approval_cancel":
+		b.handleApprovalConfirm(ctx, chatID, userID, false)
+
 	case "delete_confirm":
 		b.handleDeleteConfirm(ctx, chatID, userID, callback.Message.MessageID)
 
@@ -507,6 +530,14 @@ func (b *Bot) isInSetup(userID int64) bool {
 	return exists
 }
 
+// isInApproval checks if a user is in the approval flow
+func (b *Bot) isInApproval(userID int64) bool {
+	b.approvalMu.RLock()
+	defer b.approvalMu.RUnlock()
+	_, exists := b.approvalStates[userID]
+	return exists
+}
+
 // getSetupState gets a user's setup state
 func (b *Bot) getSetupState(userID int64) *SetupState {
 	b.setupMu.RLock()
@@ -514,11 +545,23 @@ func (b *Bot) getSetupState(userID int64) *SetupState {
 	return b.setupStates[userID]
 }
 
+func (b *Bot) getApprovalState(userID int64) *ApprovalState {
+	b.approvalMu.RLock()
+	defer b.approvalMu.RUnlock()
+	return b.approvalStates[userID]
+}
+
 // setSetupState sets a user's setup state
 func (b *Bot) setSetupState(userID int64, state *SetupState) {
 	b.setupMu.Lock()
 	defer b.setupMu.Unlock()
 	b.setupStates[userID] = state
+}
+
+func (b *Bot) setApprovalState(userID int64, state *ApprovalState) {
+	b.approvalMu.Lock()
+	defer b.approvalMu.Unlock()
+	b.approvalStates[userID] = state
 }
 
 // clearSetupState clears a user's setup state and sensitive data
@@ -530,6 +573,17 @@ func (b *Bot) clearSetupState(userID int64) {
 		// Securely clear sensitive data
 		state.ClearSensitive()
 		delete(b.setupStates, userID)
+	}
+}
+
+// clearApprovalState clears a user's approval state and sensitive data
+func (b *Bot) clearApprovalState(userID int64) {
+	b.approvalMu.Lock()
+	defer b.approvalMu.Unlock()
+
+	if state, exists := b.approvalStates[userID]; exists {
+		state.ClearSensitive()
+		delete(b.approvalStates, userID)
 	}
 }
 
@@ -554,6 +608,30 @@ func (b *Bot) cleanupSetupStates(ctx context.Context) {
 				}
 			}
 			b.setupMu.Unlock()
+		}
+	}
+}
+
+// cleanupApprovalStates periodically cleans up expired approval states
+func (b *Bot) cleanupApprovalStates(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			b.approvalMu.Lock()
+			now := time.Now()
+			for userID, state := range b.approvalStates {
+				if now.Sub(state.StartedAt) > 10*time.Minute {
+					state.ClearSensitive()
+					delete(b.approvalStates, userID)
+					log.Printf("Expired approval state for user %d", userID)
+				}
+			}
+			b.approvalMu.Unlock()
 		}
 	}
 }

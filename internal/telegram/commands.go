@@ -28,6 +28,8 @@ You already have an account set up.
 📊 Use /status to check your account
 ⚙️ Use /settings to view your preferences
 📈 Use /trades to see your trade history
+📊 Use /crypto to trade crypto 15-min markets
+
 
 Need help? Use /help for all commands.`
 	} else {
@@ -60,6 +62,7 @@ func (b *Bot) cmdHelp(ctx context.Context, chatID int64) {
 
 <b>Account</b>
 /setup - Create your account
+/approval - Add Builder keys for approvals
 /unlock - Start a session
 /lock - End your session
 /status - View account status
@@ -101,6 +104,7 @@ func (b *Bot) cmdStatus(ctx context.Context, chatID int64, userID int64) {
 	sessionStatus := "🔒 Locked"
 	sessionExpiry := ""
 	balanceStr := "🔒 <i>Unlock to view</i>"
+	builderStatus := "🔒 <i>Unlock to view</i>"
 
 	if session != nil && session.IsValid() {
 		remaining := session.TimeRemaining()
@@ -124,6 +128,13 @@ func (b *Bot) cmdStatus(ctx context.Context, chatID int64, userID int64) {
 					balanceStr = fmt.Sprintf("$%s", r.FloatString(2))
 				}
 			}
+			if strings.TrimSpace(creds.BuilderAPIKey) != "" &&
+				strings.TrimSpace(creds.BuilderAPISecret) != "" &&
+				strings.TrimSpace(creds.BuilderAPIPassphrase) != "" {
+				builderStatus = "✅ Set"
+			} else {
+				builderStatus = "❌ Not set"
+			}
 		}
 	}
 
@@ -143,6 +154,7 @@ func (b *Bot) cmdStatus(ctx context.Context, chatID int64, userID int64) {
 
 <b>Polymarket Balance</b>
 💵 USDC: %s
+🧾 Builder approvals: %s
 
 <b>Trading Stats</b>
 📈 Total trades: %d
@@ -160,6 +172,7 @@ func (b *Bot) cmdStatus(ctx context.Context, chatID int64, userID int64) {
 		user.LastActiveAt.Format("Jan 2, 15:04"),
 		sessionStatus, sessionExpiry,
 		balanceStr,
+		builderStatus,
 		stats.TotalCount,
 		stats.SuccessCount,
 		stats.FailedCount,
@@ -726,6 +739,11 @@ func (b *Bot) cmdCancel(ctx context.Context, chatID int64, userID int64) {
 	if b.isInSetup(userID) {
 		b.clearSetupState(userID)
 		b.sendMessage(chatID, "❌ Setup cancelled. Your data has been cleared.\n\nUse /setup to start again.")
+		return
+	}
+	if b.isInApproval(userID) {
+		b.clearApprovalState(userID)
+		b.sendMessage(chatID, "❌ Approval setup cancelled. Your data was not saved.\n\nUse /approval to start again.")
 		return
 	}
 

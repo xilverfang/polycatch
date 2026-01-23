@@ -2,6 +2,7 @@ package executor
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/hmac"
@@ -20,11 +21,15 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum"
+	"github.com/ethereum/go-ethereum/accounts"
+	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
+	gethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 
@@ -47,6 +52,81 @@ type polymarketErrorResponse struct {
 
 type polymarketErrorEnvelope struct {
 	Error polymarketErrorResponse `json:"error"`
+}
+
+const erc20AllowanceABIJSON = `[
+  {"constant":true,"inputs":[{"name":"owner","type":"address"},{"name":"spender","type":"address"}],"name":"allowance","outputs":[{"name":"","type":"uint256"}],"type":"function"},
+  {"constant":false,"inputs":[{"name":"spender","type":"address"},{"name":"amount","type":"uint256"}],"name":"approve","outputs":[{"name":"","type":"bool"}],"type":"function"}
+]`
+
+const erc1155ApprovalABIJSON = `[
+  {"constant":true,"inputs":[{"name":"owner","type":"address"},{"name":"operator","type":"address"}],"name":"isApprovedForAll","outputs":[{"name":"","type":"bool"}],"type":"function"},
+  {"constant":false,"inputs":[{"name":"operator","type":"address"},{"name":"approved","type":"bool"}],"name":"setApprovalForAll","outputs":[],"type":"function"}
+]`
+
+const safeOwnersABIJSON = `[
+  {"constant":true,"inputs":[],"name":"getOwners","outputs":[{"name":"","type":"address[]"}],"type":"function"}
+]`
+
+const proxyFactoryABIJSON = `[
+  {"inputs":[{"components":[{"name":"typeCode","type":"uint8"},{"name":"to","type":"address"},{"name":"value","type":"uint256"},{"name":"data","type":"bytes"}],"name":"calls","type":"tuple[]"}],"name":"proxy","outputs":[{"name":"returnValues","type":"bytes[]"}],"stateMutability":"payable","type":"function"}
+]`
+
+const multiSendABIJSON = `[
+  {"inputs":[{"internalType":"bytes","name":"transactions","type":"bytes"}],"name":"multiSend","outputs":[],"stateMutability":"nonpayable","type":"function"}
+]`
+
+var (
+	erc20AllowanceABI     abi.ABI
+	erc20AllowanceOnce    sync.Once
+	erc20AllowanceABIErr  error
+	erc1155ApprovalABI    abi.ABI
+	erc1155ApprovalOnce   sync.Once
+	erc1155ApprovalABIErr error
+	safeOwnersABI         abi.ABI
+	safeOwnersOnce        sync.Once
+	safeOwnersABIErr      error
+	proxyFactoryABI       abi.ABI
+	proxyFactoryOnce      sync.Once
+	proxyFactoryABIErr    error
+	multiSendABI          abi.ABI
+	multiSendOnce         sync.Once
+	multiSendABIErr       error
+)
+
+func getERC20AllowanceABI() (abi.ABI, error) {
+	erc20AllowanceOnce.Do(func() {
+		erc20AllowanceABI, erc20AllowanceABIErr = abi.JSON(strings.NewReader(erc20AllowanceABIJSON))
+	})
+	return erc20AllowanceABI, erc20AllowanceABIErr
+}
+
+func getERC1155ApprovalABI() (abi.ABI, error) {
+	erc1155ApprovalOnce.Do(func() {
+		erc1155ApprovalABI, erc1155ApprovalABIErr = abi.JSON(strings.NewReader(erc1155ApprovalABIJSON))
+	})
+	return erc1155ApprovalABI, erc1155ApprovalABIErr
+}
+
+func getSafeOwnersABI() (abi.ABI, error) {
+	safeOwnersOnce.Do(func() {
+		safeOwnersABI, safeOwnersABIErr = abi.JSON(strings.NewReader(safeOwnersABIJSON))
+	})
+	return safeOwnersABI, safeOwnersABIErr
+}
+
+func getProxyFactoryABI() (abi.ABI, error) {
+	proxyFactoryOnce.Do(func() {
+		proxyFactoryABI, proxyFactoryABIErr = abi.JSON(strings.NewReader(proxyFactoryABIJSON))
+	})
+	return proxyFactoryABI, proxyFactoryABIErr
+}
+
+func getMultiSendABI() (abi.ABI, error) {
+	multiSendOnce.Do(func() {
+		multiSendABI, multiSendABIErr = abi.JSON(strings.NewReader(multiSendABIJSON))
+	})
+	return multiSendABI, multiSendABIErr
 }
 
 func truncateForLog(s string, max int) string {
@@ -179,6 +259,64 @@ func looksLikeCloudflareBlock(resp *http.Response, body []byte) bool {
 	return false
 }
 
+const (
+	relayerStateConfirmed = "STATE_CONFIRMED"
+	relayerStateFailed    = "STATE_FAILED"
+	relayerStateInvalid   = "STATE_INVALID"
+)
+
+type relayerNonceResponse struct {
+	Nonce string `json:"nonce"`
+}
+
+type relayerRelayPayloadResponse struct {
+	Address string `json:"address"`
+	Nonce   string `json:"nonce"`
+}
+
+type relayerSubmitResponse struct {
+	TransactionID   string `json:"transactionID"`
+	State           string `json:"state"`
+	TransactionHash string `json:"transactionHash"`
+	Hash            string `json:"hash"`
+}
+
+type relayerTransaction struct {
+	TransactionID   string  `json:"transactionId"`
+	State           string  `json:"state"`
+	TransactionHash *string `json:"transactionHash"`
+	Hash            *string `json:"hash"`
+}
+
+type relayerSafeSignatureParams struct {
+	GasPrice       string `json:"gasPrice"`
+	Operation      string `json:"operation"`
+	SafeTxnGas     string `json:"safeTxnGas"`
+	BaseGas        string `json:"baseGas"`
+	GasToken       string `json:"gasToken"`
+	RefundReceiver string `json:"refundReceiver"`
+}
+
+type relayerProxySignatureParams struct {
+	GasPrice   string `json:"gasPrice"`
+	GasLimit   string `json:"gasLimit"`
+	RelayerFee string `json:"relayerFee"`
+	RelayHub   string `json:"relayHub"`
+	Relay      string `json:"relay"`
+}
+
+type relayerTransactionRequest struct {
+	Type            string      `json:"type"`
+	From            string      `json:"from"`
+	To              string      `json:"to"`
+	ProxyWallet     string      `json:"proxyWallet,omitempty"`
+	Data            string      `json:"data"`
+	Nonce           string      `json:"nonce,omitempty"`
+	Signature       string      `json:"signature"`
+	SignatureParams interface{} `json:"signatureParams"`
+	Metadata        string      `json:"metadata,omitempty"`
+}
+
 // generateRandomSalt generates a random salt within 2^32 range
 // This matches Polymarket's official go-order-utils library
 // Using nanosecond timestamps would exceed JavaScript's safe integer limit
@@ -278,16 +416,18 @@ func New(cfg *config.Config) (*Executor, error) {
 		return nil, errors.New("SIGNER_PRIVATE_KEY is required for executor")
 	}
 
-	// Validate Builder API credentials
-	if strings.TrimSpace(cfg.BuilderAPIKey) == "" {
-		return nil, errors.New("BUILDER_API_KEY is required and cannot be empty")
+	// Validate CLOB API credentials (L2 auth)
+	if strings.TrimSpace(cfg.CLOBAPIKey) == "" {
+		return nil, errors.New("CLOB_API_KEY is required and cannot be empty")
 	}
-	if strings.TrimSpace(cfg.BuilderSecret) == "" {
-		return nil, errors.New("BUILDER_SECRET is required and cannot be empty")
+	if strings.TrimSpace(cfg.CLOBAPISecret) == "" {
+		return nil, errors.New("CLOB_API_SECRET is required and cannot be empty")
 	}
-	if strings.TrimSpace(cfg.BuilderPassphrase) == "" {
-		return nil, errors.New("BUILDER_PASSPHRASE is required and cannot be empty")
+	if strings.TrimSpace(cfg.CLOBAPIPassphrase) == "" {
+		return nil, errors.New("CLOB_API_PASSPHRASE is required and cannot be empty")
 	}
+
+	// Builder API credentials are required only when submitting relayer approvals.
 
 	// Derive signer address from private key
 	privateKey, err := crypto.HexToECDSA(strings.TrimPrefix(cfg.SignerPrivateKey, "0x"))
@@ -305,10 +445,10 @@ func New(cfg *config.Config) (*Executor, error) {
 	)
 
 	// Log credential status (without exposing values)
-	log.Printf("Executor | API credentials loaded: Key=%d chars, Secret=%d chars, Passphrase=%d chars",
-		len(strings.TrimSpace(cfg.BuilderAPIKey)),
-		len(strings.TrimSpace(cfg.BuilderSecret)),
-		len(strings.TrimSpace(cfg.BuilderPassphrase)))
+	log.Printf("Executor | CLOB API credentials loaded: Key=%d chars, Secret=%d chars, Passphrase=%d chars",
+		len(strings.TrimSpace(cfg.CLOBAPIKey)),
+		len(strings.TrimSpace(cfg.CLOBAPISecret)),
+		len(strings.TrimSpace(cfg.CLOBAPIPassphrase)))
 	log.Printf("Executor | Using official Polymarket go-order-utils library for signing")
 	log.Printf("Executor | Signer address: %s", signerAddress)
 
@@ -575,6 +715,632 @@ func (e *Executor) ExecuteDirect(ctx context.Context, signal *types.TradeSignal)
 	log.Println("═══════════════════════════════════════════════════════════")
 
 	return result, nil
+}
+
+func (e *Executor) ensureRPCClient(ctx context.Context) (*ethclient.Client, error) {
+	if e.client != nil {
+		return e.client, nil
+	}
+	if e.config.PolygonWSSURL == "" {
+		return nil, fmt.Errorf("POLYGON_WSS_URL is empty; cannot create RPC client")
+	}
+	rpcURL := strings.Replace(e.config.PolygonWSSURL, "wss://", "https://", 1)
+	client, err := ethclient.DialContext(ctx, rpcURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to Polygon RPC: %w", err)
+	}
+	e.client = client
+	return e.client, nil
+}
+
+func (e *Executor) CheckUSDCAllowance(ctx context.Context, owner common.Address, spender common.Address) (*big.Int, error) {
+	client, err := e.ensureRPCClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	parsedABI, err := getERC20AllowanceABI()
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse ERC20 allowance ABI: %w", err)
+	}
+
+	data, err := parsedABI.Pack("allowance", owner, spender)
+	if err != nil {
+		return nil, fmt.Errorf("failed to pack allowance call: %w", err)
+	}
+
+	usdcAddr := common.HexToAddress(e.config.USDCContract)
+	callMsg := ethereum.CallMsg{
+		To:   &usdcAddr,
+		Data: data,
+	}
+	result, err := client.CallContract(ctx, callMsg, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to call allowance: %w", err)
+	}
+
+	allowance := new(big.Int).SetBytes(result)
+	return allowance, nil
+}
+
+func (e *Executor) CheckCTFApproval(ctx context.Context, owner common.Address, operator common.Address) (bool, error) {
+	client, err := e.ensureRPCClient(ctx)
+	if err != nil {
+		return false, err
+	}
+
+	parsedABI, err := getERC1155ApprovalABI()
+	if err != nil {
+		return false, fmt.Errorf("failed to parse ERC1155 approval ABI: %w", err)
+	}
+
+	data, err := parsedABI.Pack("isApprovedForAll", owner, operator)
+	if err != nil {
+		return false, fmt.Errorf("failed to pack isApprovedForAll call: %w", err)
+	}
+
+	ctfAddr := common.HexToAddress(e.config.CTFContract)
+	callMsg := ethereum.CallMsg{
+		To:   &ctfAddr,
+		Data: data,
+	}
+	result, err := client.CallContract(ctx, callMsg, nil)
+	if err != nil {
+		return false, fmt.Errorf("failed to call isApprovedForAll: %w", err)
+	}
+
+	var approved bool
+	if err := parsedABI.UnpackIntoInterface(&approved, "isApprovedForAll", result); err != nil {
+		return false, fmt.Errorf("failed to unpack isApprovedForAll result: %w", err)
+	}
+	return approved, nil
+}
+
+func maxUint256() *big.Int {
+	value := new(big.Int).Lsh(big.NewInt(1), 256)
+	return value.Sub(value, big.NewInt(1))
+}
+
+func (e *Executor) ApproveUSDC(ctx context.Context, spender common.Address, amount *big.Int) (common.Hash, error) {
+	if e.config.SignatureType != 0 {
+		return common.Hash{}, fmt.Errorf("approval execution is only supported for EOA wallets (SignatureType=0), got %d", e.config.SignatureType)
+	}
+	if amount == nil || amount.Sign() <= 0 {
+		return common.Hash{}, errors.New("approval amount must be greater than 0")
+	}
+
+	parsedABI, err := getERC20AllowanceABI()
+	if err != nil {
+		return common.Hash{}, fmt.Errorf("failed to parse ERC20 allowance ABI: %w", err)
+	}
+	data, err := parsedABI.Pack("approve", spender, amount)
+	if err != nil {
+		return common.Hash{}, fmt.Errorf("failed to pack approve call: %w", err)
+	}
+
+	usdcAddr := common.HexToAddress(e.config.USDCContract)
+	return e.executeEOATransaction(ctx, usdcAddr, data)
+}
+
+func (e *Executor) ApproveCTFAll(ctx context.Context, operator common.Address) (common.Hash, error) {
+	if e.config.SignatureType != 0 {
+		return common.Hash{}, fmt.Errorf("approval execution is only supported for EOA wallets (SignatureType=0), got %d", e.config.SignatureType)
+	}
+
+	parsedABI, err := getERC1155ApprovalABI()
+	if err != nil {
+		return common.Hash{}, fmt.Errorf("failed to parse ERC1155 approval ABI: %w", err)
+	}
+	data, err := parsedABI.Pack("setApprovalForAll", operator, true)
+	if err != nil {
+		return common.Hash{}, fmt.Errorf("failed to pack setApprovalForAll call: %w", err)
+	}
+
+	ctfAddr := common.HexToAddress(e.config.CTFContract)
+	return e.executeEOATransaction(ctx, ctfAddr, data)
+}
+
+func (e *Executor) executeEOATransaction(ctx context.Context, to common.Address, data []byte) (common.Hash, error) {
+	client, err := e.ensureRPCClient(ctx)
+	if err != nil {
+		return common.Hash{}, err
+	}
+
+	signerAddr := common.HexToAddress(e.signerAddress)
+	nonce, err := client.PendingNonceAt(ctx, signerAddr)
+	if err != nil {
+		return common.Hash{}, fmt.Errorf("failed to get nonce: %w", err)
+	}
+
+	gasPrice, err := client.SuggestGasPrice(ctx)
+	if err != nil {
+		return common.Hash{}, fmt.Errorf("failed to get gas price: %w", err)
+	}
+
+	gasLimit, err := client.EstimateGas(ctx, ethereum.CallMsg{
+		From: signerAddr,
+		To:   &to,
+		Data: data,
+	})
+	if err != nil {
+		return common.Hash{}, fmt.Errorf("failed to estimate gas: %w", err)
+	}
+
+	tx := gethtypes.NewTx(&gethtypes.LegacyTx{
+		Nonce:    nonce,
+		To:       &to,
+		Value:    big.NewInt(0),
+		Gas:      gasLimit,
+		GasPrice: gasPrice,
+		Data:     data,
+	})
+
+	chainID, err := client.ChainID(ctx)
+	if err != nil {
+		return common.Hash{}, fmt.Errorf("failed to get chain ID: %w", err)
+	}
+
+	signedTx, err := gethtypes.SignTx(tx, gethtypes.NewEIP155Signer(chainID), e.privateKey)
+	if err != nil {
+		return common.Hash{}, fmt.Errorf("failed to sign transaction: %w", err)
+	}
+
+	if err := client.SendTransaction(ctx, signedTx); err != nil {
+		return common.Hash{}, fmt.Errorf("failed to send transaction: %w", err)
+	}
+
+	return signedTx.Hash(), nil
+}
+
+func (e *Executor) buildRelayerAuthHeaders(method, path string, body []byte) (map[string]string, error) {
+	apiKey := strings.TrimSpace(e.config.BuilderAPIKey)
+	apiSecret := strings.TrimSpace(e.config.BuilderSecret)
+	apiPassphrase := strings.TrimSpace(e.config.BuilderPassphrase)
+	if apiKey == "" || apiSecret == "" || apiPassphrase == "" {
+		return nil, fmt.Errorf("builder credentials are required for relayer requests")
+	}
+
+	// Timestamp in seconds (matching official SDK: Math.floor(Date.now() / 1000))
+	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
+
+	// Message format: timestamp + method + path + body (per official builder-signing-sdk)
+	// Note: body is only appended if present
+	message := timestamp + method + path
+	if len(body) > 0 {
+		message += string(body)
+	}
+
+	// Decode secret from standard base64 (per official SDK: Buffer.from(secret, "base64"))
+	secretBytes, err := base64.StdEncoding.DecodeString(apiSecret)
+	if err != nil {
+		// If standard base64 fails, try URL-safe base64
+		secretBytes, err = base64.URLEncoding.DecodeString(apiSecret)
+		if err != nil {
+			// Last resort: use as raw bytes
+			secretBytes = []byte(apiSecret)
+		}
+	}
+
+	// HMAC-SHA256
+	mac := hmac.New(sha256.New, secretBytes)
+	mac.Write([]byte(message))
+
+	// Signature encoding: standard base64 first, then convert to URL-safe
+	// (per official SDK: digest("base64") then replace + with - and / with _)
+	sig := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+	signature := strings.ReplaceAll(strings.ReplaceAll(sig, "+", "-"), "/", "_")
+
+	// Debug logging
+	apiKeyPreview := apiKey
+	if len(apiKey) > 8 {
+		apiKeyPreview = apiKey[:8] + "..."
+	}
+	log.Printf("DEBUG | Relayer Auth - Method: %s, Path: %s, Timestamp: %s", method, path, timestamp)
+	log.Printf("DEBUG | Relayer Auth - API Key: %s, Secret decoded: %d bytes", apiKeyPreview, len(secretBytes))
+	log.Printf("DEBUG | Relayer Auth - Message length: %d, Signature: %s...", len(message), signature[:min(20, len(signature))])
+
+	return map[string]string{
+		"POLY_BUILDER_API_KEY":    apiKey,
+		"POLY_BUILDER_PASSPHRASE": apiPassphrase,
+		"POLY_BUILDER_TIMESTAMP":  timestamp,
+		"POLY_BUILDER_SIGNATURE":  signature,
+	}, nil
+}
+
+func decodeBuilderSecret(secret string) []byte {
+	secret = strings.TrimSpace(secret)
+	if secret == "" {
+		return []byte{}
+	}
+	if b, err := base64.StdEncoding.DecodeString(secret); err == nil {
+		return b
+	}
+	if b, err := base64.URLEncoding.DecodeString(secret); err == nil {
+		return b
+	}
+	if b, err := base64.RawStdEncoding.DecodeString(secret); err == nil {
+		return b
+	}
+	if b, err := base64.RawURLEncoding.DecodeString(secret); err == nil {
+		return b
+	}
+	return []byte(secret)
+}
+
+func (e *Executor) relayerRequest(ctx context.Context, method, path string, body []byte) ([]byte, http.Header, int, error) {
+	baseURL := strings.TrimRight(e.config.RelayerURL, "/")
+	if baseURL == "" {
+		return nil, nil, 0, errors.New("RelayerURL is required")
+	}
+	url := fmt.Sprintf("%s%s", baseURL, path)
+
+	var reader io.Reader
+	if len(body) > 0 {
+		reader = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, url, reader)
+	if err != nil {
+		return nil, nil, 0, fmt.Errorf("failed to create relayer request: %w", err)
+	}
+	if method == http.MethodPost {
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json")
+	}
+
+	headers, err := e.buildRelayerAuthHeaders(method, path, body)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := e.httpClient.Do(req)
+	if err != nil {
+		return nil, nil, 0, fmt.Errorf("relayer request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, nil, resp.StatusCode, fmt.Errorf("failed to read relayer response: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, resp.Header, resp.StatusCode, fmt.Errorf("relayer request failed (status=%d): %s", resp.StatusCode, truncateForLog(string(respBody), 2000))
+	}
+	return respBody, resp.Header, resp.StatusCode, nil
+}
+
+func (e *Executor) relayerGetNonce(ctx context.Context, signerAddress string, txType string) (string, error) {
+	path := fmt.Sprintf("/nonce?address=%s&type=%s", signerAddress, txType)
+	body, _, _, err := e.relayerRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return "", err
+	}
+	var resp relayerNonceResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return "", fmt.Errorf("failed to parse relayer nonce response: %w", err)
+	}
+	if strings.TrimSpace(resp.Nonce) == "" {
+		return "", errors.New("relayer nonce response was empty")
+	}
+	return resp.Nonce, nil
+}
+
+func (e *Executor) relayerGetRelayPayload(ctx context.Context, signerAddress string, txType string) (*relayerRelayPayloadResponse, error) {
+	path := fmt.Sprintf("/relay-payload?address=%s&type=%s", signerAddress, txType)
+	body, _, _, err := e.relayerRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp relayerRelayPayloadResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("failed to parse relayer payload response: %w", err)
+	}
+	if !common.IsHexAddress(resp.Address) || strings.TrimSpace(resp.Nonce) == "" {
+		return nil, fmt.Errorf("relayer payload response missing address/nonce: %+v", resp)
+	}
+	return &resp, nil
+}
+
+func (e *Executor) relayerGetDeployed(ctx context.Context, safeAddress string) (bool, error) {
+	path := fmt.Sprintf("/deployed?address=%s", safeAddress)
+	body, _, _, err := e.relayerRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return false, err
+	}
+	var resp struct {
+		Deployed bool `json:"deployed"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return false, fmt.Errorf("failed to parse relayer deployed response: %w", err)
+	}
+	return resp.Deployed, nil
+}
+
+func (e *Executor) relayerSubmit(ctx context.Context, request relayerTransactionRequest) (string, error) {
+	payload, err := json.Marshal(request)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal relayer request: %w", err)
+	}
+	body, _, _, err := e.relayerRequest(ctx, http.MethodPost, "/submit", payload)
+	if err != nil {
+		return "", err
+	}
+	var resp relayerSubmitResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return "", fmt.Errorf("failed to parse relayer submit response: %w", err)
+	}
+	if strings.TrimSpace(resp.TransactionID) == "" {
+		return "", fmt.Errorf("relayer response missing transaction ID: %s", truncateForLog(string(body), 500))
+	}
+	return resp.TransactionID, nil
+}
+
+func (e *Executor) relayerGetTransaction(ctx context.Context, transactionID string) (*relayerTransaction, error) {
+	path := fmt.Sprintf("/transaction?id=%s", transactionID)
+	body, _, _, err := e.relayerRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp []relayerTransaction
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("failed to parse relayer transaction response: %w", err)
+	}
+	if len(resp) == 0 {
+		return nil, fmt.Errorf("relayer transaction not found: %s", transactionID)
+	}
+	return &resp[0], nil
+}
+
+func (e *Executor) waitForRelayerConfirmation(ctx context.Context, transactionID string) error {
+	timeout := time.NewTimer(90 * time.Second)
+	ticker := time.NewTicker(2 * time.Second)
+	defer timeout.Stop()
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timeout.C:
+			return fmt.Errorf("timed out waiting for relayer transaction %s", transactionID)
+		case <-ticker.C:
+			tx, err := e.relayerGetTransaction(ctx, transactionID)
+			if err != nil {
+				return err
+			}
+			switch tx.State {
+			case relayerStateConfirmed:
+				return nil
+			case relayerStateFailed, relayerStateInvalid:
+				return fmt.Errorf("relayer transaction %s failed (state=%s)", transactionID, tx.State)
+			}
+		}
+	}
+}
+
+func deriveProxyWallet(factory common.Address, signer common.Address, initCodeHash common.Hash) common.Address {
+	salt := crypto.Keccak256Hash(signer.Bytes())
+	var saltBytes [32]byte
+	copy(saltBytes[:], salt.Bytes())
+	return crypto.CreateAddress2(factory, saltBytes, initCodeHash.Bytes())
+}
+
+func deriveSafeWallet(factory common.Address, signer common.Address, initCodeHash common.Hash) common.Address {
+	padded := common.LeftPadBytes(signer.Bytes(), 32)
+	salt := crypto.Keccak256Hash(padded)
+	var saltBytes [32]byte
+	copy(saltBytes[:], salt.Bytes())
+	return crypto.CreateAddress2(factory, saltBytes, initCodeHash.Bytes())
+}
+
+func packSafeSignature(sig []byte) (string, error) {
+	if len(sig) != 65 {
+		return "", fmt.Errorf("invalid signature length: %d", len(sig))
+	}
+	v := sig[64]
+	switch v {
+	case 0, 1:
+		v += 31
+	case 27, 28:
+		v += 4
+	default:
+		return "", fmt.Errorf("unexpected signature v value: %d", v)
+	}
+	r := new(big.Int).SetBytes(sig[:32])
+	s := new(big.Int).SetBytes(sig[32:64])
+	packed := make([]byte, 0, 65)
+	packed = append(packed, common.LeftPadBytes(r.Bytes(), 32)...)
+	packed = append(packed, common.LeftPadBytes(s.Bytes(), 32)...)
+	packed = append(packed, v)
+	return hexutil.Encode(packed), nil
+}
+
+func signPersonalHash(privateKey *ecdsa.PrivateKey, hash []byte) ([]byte, error) {
+	msgHash := accounts.TextHash(hash)
+	sig, err := crypto.Sign(msgHash, privateKey)
+	if err != nil {
+		return nil, err
+	}
+	if sig[64] == 0 || sig[64] == 1 {
+		sig[64] += 27
+	}
+	return sig, nil
+}
+
+func encodeProxyCallData(txns []relayerProxyCall) ([]byte, error) {
+	parsedABI, err := getProxyFactoryABI()
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse proxy factory ABI: %w", err)
+	}
+	calls := make([]struct {
+		TypeCode uint8
+		To       common.Address
+		Value    *big.Int
+		Data     []byte
+	}, 0, len(txns))
+	for _, txn := range txns {
+		calls = append(calls, struct {
+			TypeCode uint8
+			To       common.Address
+			Value    *big.Int
+			Data     []byte
+		}{
+			TypeCode: txn.TypeCode,
+			To:       txn.To,
+			Value:    txn.Value,
+			Data:     txn.Data,
+		})
+	}
+	data, err := parsedABI.Pack("proxy", calls)
+	if err != nil {
+		return nil, fmt.Errorf("failed to pack proxy calls: %w", err)
+	}
+	return data, nil
+}
+
+func encodeMultiSendData(txns []relayerSafeCall) ([]byte, error) {
+	parsedABI, err := getMultiSendABI()
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse multisend ABI: %w", err)
+	}
+	var packed []byte
+	for _, tx := range txns {
+		packed = append(packed, tx.Operation)
+		packed = append(packed, tx.To.Bytes()...)
+		packed = append(packed, common.LeftPadBytes(tx.Value.Bytes(), 32)...)
+		packed = append(packed, common.LeftPadBytes(big.NewInt(int64(len(tx.Data))).Bytes(), 32)...)
+		packed = append(packed, tx.Data...)
+	}
+	data, err := parsedABI.Pack("multiSend", packed)
+	if err != nil {
+		return nil, fmt.Errorf("failed to pack multisend call: %w", err)
+	}
+	return data, nil
+}
+
+type relayerSafeCall struct {
+	Operation uint8
+	To        common.Address
+	Value     *big.Int
+	Data      []byte
+}
+
+type relayerProxyCall struct {
+	TypeCode uint8
+	To       common.Address
+	Value    *big.Int
+	Data     []byte
+}
+
+func buildSafeCreateSignature(
+	privateKey *ecdsa.PrivateKey,
+	factoryName string,
+	chainID *big.Int,
+	factory common.Address,
+	paymentToken common.Address,
+	payment *big.Int,
+	paymentReceiver common.Address,
+) (string, error) {
+	domainTypeHash := crypto.Keccak256([]byte("EIP712Domain(string name,uint256 chainId,address verifyingContract)"))
+	nameHash := crypto.Keccak256([]byte(factoryName))
+	chainIDBytes := common.LeftPadBytes(chainID.Bytes(), 32)
+	factoryBytes := common.LeftPadBytes(factory.Bytes(), 32)
+	domainSeparator := crypto.Keccak256(append(append(append(domainTypeHash, nameHash...), chainIDBytes...), factoryBytes...))
+
+	structTypeHash := crypto.Keccak256([]byte("CreateProxy(address paymentToken,uint256 payment,address paymentReceiver)"))
+	paymentTokenBytes := common.LeftPadBytes(paymentToken.Bytes(), 32)
+	paymentBytes := common.LeftPadBytes(payment.Bytes(), 32)
+	paymentReceiverBytes := common.LeftPadBytes(paymentReceiver.Bytes(), 32)
+	structHash := crypto.Keccak256(append(append(append(structTypeHash, paymentTokenBytes...), paymentBytes...), paymentReceiverBytes...))
+
+	digest := crypto.Keccak256(
+		[]byte("\x19\x01"),
+		domainSeparator,
+		structHash,
+	)
+	sig, err := crypto.Sign(digest, privateKey)
+	if err != nil {
+		return "", fmt.Errorf("failed to sign safe create digest: %w", err)
+	}
+	if sig[64] == 0 || sig[64] == 1 {
+		sig[64] += 27
+	}
+	return hexutil.Encode(sig), nil
+}
+
+func buildSafeTransactionDigest(
+	chainID *big.Int,
+	safe common.Address,
+	tx relayerSafeCall,
+	safeTxGas *big.Int,
+	baseGas *big.Int,
+	gasPrice *big.Int,
+	gasToken common.Address,
+	refundReceiver common.Address,
+	nonce *big.Int,
+) []byte {
+	domainTypeHash := crypto.Keccak256([]byte("EIP712Domain(uint256 chainId,address verifyingContract)"))
+	chainIDBytes := common.LeftPadBytes(chainID.Bytes(), 32)
+	safeBytes := common.LeftPadBytes(safe.Bytes(), 32)
+	domainSeparator := crypto.Keccak256(append(append(domainTypeHash, chainIDBytes...), safeBytes...))
+
+	structTypeHash := crypto.Keccak256([]byte("SafeTx(address to,uint256 value,bytes data,uint8 operation,uint256 safeTxGas,uint256 baseGas,uint256 gasPrice,address gasToken,address refundReceiver,uint256 nonce)"))
+	toBytes := common.LeftPadBytes(tx.To.Bytes(), 32)
+	valueBytes := common.LeftPadBytes(tx.Value.Bytes(), 32)
+	dataHash := crypto.Keccak256(tx.Data)
+	operationBytes := common.LeftPadBytes([]byte{tx.Operation}, 32)
+	safeTxGasBytes := common.LeftPadBytes(safeTxGas.Bytes(), 32)
+	baseGasBytes := common.LeftPadBytes(baseGas.Bytes(), 32)
+	gasPriceBytes := common.LeftPadBytes(gasPrice.Bytes(), 32)
+	gasTokenBytes := common.LeftPadBytes(gasToken.Bytes(), 32)
+	refundReceiverBytes := common.LeftPadBytes(refundReceiver.Bytes(), 32)
+	nonceBytes := common.LeftPadBytes(nonce.Bytes(), 32)
+
+	structHash := crypto.Keccak256(append(append(append(append(append(append(append(append(append(append(
+		structTypeHash,
+		toBytes...),
+		valueBytes...),
+		dataHash...),
+		operationBytes...),
+		safeTxGasBytes...),
+		baseGasBytes...),
+		gasPriceBytes...),
+		gasTokenBytes...),
+		refundReceiverBytes...),
+		nonceBytes...))
+
+	return crypto.Keccak256(
+		[]byte("\x19\x01"),
+		domainSeparator,
+		structHash,
+	)
+}
+
+func buildProxyStructHash(
+	from common.Address,
+	to common.Address,
+	data []byte,
+	txFee *big.Int,
+	gasPrice *big.Int,
+	gasLimit *big.Int,
+	nonce *big.Int,
+	relayHub common.Address,
+	relay common.Address,
+) []byte {
+	buf := make([]byte, 0, 4+20+20+len(data)+32*4+20+20)
+	buf = append(buf, []byte("rlx:")...)
+	buf = append(buf, from.Bytes()...)
+	buf = append(buf, to.Bytes()...)
+	buf = append(buf, data...)
+	buf = append(buf, common.LeftPadBytes(txFee.Bytes(), 32)...)
+	buf = append(buf, common.LeftPadBytes(gasPrice.Bytes(), 32)...)
+	buf = append(buf, common.LeftPadBytes(gasLimit.Bytes(), 32)...)
+	buf = append(buf, common.LeftPadBytes(nonce.Bytes(), 32)...)
+	buf = append(buf, relayHub.Bytes()...)
+	buf = append(buf, relay.Bytes()...)
+	return crypto.Keccak256(buf)
 }
 
 // checkSlippage verifies that price hasn't moved beyond tolerance
@@ -966,7 +1732,7 @@ func (e *Executor) buildAndSubmitOrder(ctx context.Context, signal *types.TradeS
 
 // submitSignedOrderFromLib submits a signed order (from official library) to the CLOB API
 func (e *Executor) submitSignedOrderFromLib(ctx context.Context, signal *types.TradeSignal, signedOrder *model.SignedOrder) (string, error) {
-	apiKey := strings.TrimSpace(e.config.BuilderAPIKey)
+	apiKey := strings.TrimSpace(e.config.CLOBAPIKey)
 
 	// Convert Side to string for API
 	// signedOrder.Order.Side is a *big.Int
@@ -1015,6 +1781,10 @@ func (e *Executor) submitSignedOrderFromLib(ctx context.Context, signal *types.T
 		"orderType": orderType,
 	}
 
+	if err := e.ensureOrderApprovals(ctx, signal, signedOrder.Order.Maker, signedOrder.Order.MakerAmount); err != nil {
+		return "", err
+	}
+
 	// Marshal JSON - Go's json.Marshal produces compact JSON
 	payloadBytes, err := json.Marshal(orderPayload)
 	if err != nil {
@@ -1036,8 +1806,8 @@ func (e *Executor) submitSignedOrderFromLib(ctx context.Context, signal *types.T
 
 	// Trim whitespace from credentials (common issue when copying from UI)
 	// apiKey is already defined above for the owner field
-	apiSecret := strings.TrimSpace(e.config.BuilderSecret)
-	apiPassphrase := strings.TrimSpace(e.config.BuilderPassphrase)
+	apiSecret := strings.TrimSpace(e.config.CLOBAPISecret)
+	apiPassphrase := strings.TrimSpace(e.config.CLOBAPIPassphrase)
 
 	// Validate credentials are not empty
 	if apiKey == "" {
@@ -1065,16 +1835,7 @@ func (e *Executor) submitSignedOrderFromLib(ctx context.Context, signal *types.T
 	message := fmt.Sprintf("%s%s%s%s", timestamp, "POST", path, body)
 
 	// Generate HMAC-SHA256 signature
-	// Secret is base64 URL-safe encoded, decode it first
-	secretBytes, decodeErr := base64.URLEncoding.DecodeString(apiSecret)
-	if decodeErr != nil {
-		// Try standard base64 if URL-safe fails
-		secretBytes, decodeErr = base64.StdEncoding.DecodeString(apiSecret)
-		if decodeErr != nil {
-			// If not base64, use as-is
-			secretBytes = []byte(apiSecret)
-		}
-	}
+	secretBytes := decodeBuilderSecret(apiSecret)
 	mac := hmac.New(sha256.New, secretBytes)
 	mac.Write([]byte(message))
 	// Encode signature using base64 URL-safe encoding (per official client)
@@ -1204,6 +1965,621 @@ func (e *Executor) submitSignedOrderFromLib(ctx context.Context, signal *types.T
 	return orderID, nil
 }
 
+func (e *Executor) ensureOrderApprovals(
+	ctx context.Context,
+	signal *types.TradeSignal,
+	maker common.Address,
+	makerAmount *big.Int,
+) error {
+	if signal == nil {
+		return errors.New("trade signal cannot be nil")
+	}
+	if makerAmount == nil {
+		return errors.New("maker amount cannot be nil")
+	}
+
+	missingUSDC, missingCTF, err := e.findMissingApprovals(ctx, signal, maker, makerAmount)
+	if err != nil {
+		return err
+	}
+
+	if len(missingUSDC) == 0 && len(missingCTF) == 0 {
+		return nil
+	}
+
+	if e.config.SignatureType != 0 {
+		return e.executeRelayerApprovals(ctx, maker, missingUSDC, missingCTF)
+	}
+
+	for _, spender := range missingUSDC {
+		txHash, err := e.ApproveUSDC(ctx, spender, maxUint256())
+		if err != nil {
+			return fmt.Errorf("failed to approve USDC for %s: %w", spender.Hex(), err)
+		}
+		if err := e.waitForTxReceipt(ctx, txHash); err != nil {
+			return fmt.Errorf("USDC approval tx failed for %s: %w", spender.Hex(), err)
+		}
+	}
+
+	for _, operator := range missingCTF {
+		txHash, err := e.ApproveCTFAll(ctx, operator)
+		if err != nil {
+			return fmt.Errorf("failed to approve CTF tokens for %s: %w", operator.Hex(), err)
+		}
+		if err := e.waitForTxReceipt(ctx, txHash); err != nil {
+			return fmt.Errorf("CTF approval tx failed for %s: %w", operator.Hex(), err)
+		}
+	}
+
+	return nil
+}
+
+// EnsureDefaultApprovals checks and submits approvals for common contracts
+// without requiring a specific order context.
+func (e *Executor) EnsureDefaultApprovals(ctx context.Context) error {
+	maker := common.HexToAddress(e.config.FunderAddress)
+
+	var missingUSDC []common.Address
+	var missingCTF []common.Address
+
+	for _, spender := range e.requiredUSDCSpenders(true) {
+		allowance, err := e.CheckUSDCAllowance(ctx, maker, spender)
+		if err != nil {
+			return fmt.Errorf("failed to check USDC allowance for %s: %w", spender.Hex(), err)
+		}
+		if allowance.Sign() == 0 {
+			missingUSDC = append(missingUSDC, spender)
+		}
+	}
+
+	for _, operator := range e.requiredCTFOperators(true) {
+		approved, err := e.CheckCTFApproval(ctx, maker, operator)
+		if err != nil {
+			return fmt.Errorf("failed to check CTF approval for %s: %w", operator.Hex(), err)
+		}
+		if !approved {
+			missingCTF = append(missingCTF, operator)
+		}
+	}
+
+	if len(missingUSDC) == 0 && len(missingCTF) == 0 {
+		return nil
+	}
+
+	if e.config.SignatureType != 0 {
+		return e.executeRelayerApprovals(ctx, maker, missingUSDC, missingCTF)
+	}
+
+	for _, spender := range missingUSDC {
+		txHash, err := e.ApproveUSDC(ctx, spender, maxUint256())
+		if err != nil {
+			return fmt.Errorf("failed to approve USDC for %s: %w", spender.Hex(), err)
+		}
+		if err := e.waitForTxReceipt(ctx, txHash); err != nil {
+			return fmt.Errorf("USDC approval tx failed for %s: %w", spender.Hex(), err)
+		}
+	}
+
+	for _, operator := range missingCTF {
+		txHash, err := e.ApproveCTFAll(ctx, operator)
+		if err != nil {
+			return fmt.Errorf("failed to approve CTF tokens for %s: %w", operator.Hex(), err)
+		}
+		if err := e.waitForTxReceipt(ctx, txHash); err != nil {
+			return fmt.Errorf("CTF approval tx failed for %s: %w", operator.Hex(), err)
+		}
+	}
+
+	return nil
+}
+
+func (e *Executor) executeRelayerApprovals(
+	ctx context.Context,
+	maker common.Address,
+	missingUSDC []common.Address,
+	missingCTF []common.Address,
+) error {
+	if e.config.SignatureType != 1 && e.config.SignatureType != 2 {
+		return fmt.Errorf("unsupported SignatureType for relayer approvals: %d", e.config.SignatureType)
+	}
+	if len(missingUSDC) == 0 && len(missingCTF) == 0 {
+		return nil
+	}
+
+	switch e.config.SignatureType {
+	case 1:
+		return e.executeProxyApprovals(ctx, maker, missingUSDC, missingCTF)
+	case 2:
+		return e.executeSafeApprovals(ctx, maker, missingUSDC, missingCTF)
+	default:
+		return fmt.Errorf("unsupported SignatureType for relayer approvals: %d", e.config.SignatureType)
+	}
+}
+
+func (e *Executor) relayerWalletTypeLabel() string {
+	if e.config.SignatureType == 1 {
+		return "proxy"
+	}
+	if e.config.SignatureType == 2 {
+		return "safe"
+	}
+	return "unknown"
+}
+
+func (e *Executor) expectedRelayerWallet() (common.Address, error) {
+	signer := common.HexToAddress(e.signerAddress)
+	if e.config.SignatureType == 1 {
+		factory := common.HexToAddress(e.config.RelayerProxyFactory)
+		initCodeHash := common.HexToHash(e.config.RelayerProxyInitCode)
+		return deriveProxyWallet(factory, signer, initCodeHash), nil
+	}
+	if e.config.SignatureType == 2 {
+		factory := common.HexToAddress(e.config.RelayerSafeFactory)
+		initCodeHash := common.HexToHash(e.config.RelayerSafeInitCode)
+		return deriveSafeWallet(factory, signer, initCodeHash), nil
+	}
+	return common.Address{}, fmt.Errorf("unsupported SignatureType for relayer wallet derivation: %d", e.config.SignatureType)
+}
+
+func (e *Executor) executeProxyApprovals(
+	ctx context.Context,
+	proxyWallet common.Address,
+	missingUSDC []common.Address,
+	missingCTF []common.Address,
+) error {
+	relayPayload, err := e.relayerGetRelayPayload(ctx, e.signerAddress, "PROXY")
+	if err != nil {
+		return fmt.Errorf("failed to get relayer payload: %w", err)
+	}
+
+	calls, err := e.buildApprovalCalls(missingUSDC, missingCTF)
+	if err != nil {
+		return err
+	}
+	if len(calls) == 0 {
+		return nil
+	}
+
+	proxyCalls := make([]relayerProxyCall, 0, len(calls))
+	for _, call := range calls {
+		proxyCalls = append(proxyCalls, relayerProxyCall{
+			TypeCode: 1,
+			To:       call.To,
+			Value:    call.Value,
+			Data:     call.Data,
+		})
+	}
+	encodedCalls, err := encodeProxyCallData(proxyCalls)
+	if err != nil {
+		return err
+	}
+
+	nonce, ok := new(big.Int).SetString(relayPayload.Nonce, 10)
+	if !ok {
+		return fmt.Errorf("invalid relayer nonce: %s", relayPayload.Nonce)
+	}
+	gasLimit := new(big.Int).SetUint64(e.config.RelayerProxyGasLimit)
+	relayAddr := common.HexToAddress(relayPayload.Address)
+	relayHub := common.HexToAddress(e.config.RelayerRelayHub)
+	proxyFactory := common.HexToAddress(e.config.RelayerProxyFactory)
+	txFee := big.NewInt(0)
+	gasPrice := big.NewInt(0)
+	structHash := buildProxyStructHash(
+		common.HexToAddress(e.signerAddress),
+		proxyFactory,
+		encodedCalls,
+		txFee,
+		gasPrice,
+		gasLimit,
+		nonce,
+		relayHub,
+		relayAddr,
+	)
+	sig, err := signPersonalHash(e.privateKey, structHash)
+	if err != nil {
+		return fmt.Errorf("failed to sign proxy approval: %w", err)
+	}
+
+	request := relayerTransactionRequest{
+		Type:        "PROXY",
+		From:        e.signerAddress,
+		To:          proxyFactory.Hex(),
+		ProxyWallet: proxyWallet.Hex(),
+		Data:        hexutil.Encode(encodedCalls),
+		Nonce:       relayPayload.Nonce,
+		Signature:   hexutil.Encode(sig),
+		SignatureParams: relayerProxySignatureParams{
+			GasPrice:   "0",
+			GasLimit:   gasLimit.String(),
+			RelayerFee: "0",
+			RelayHub:   relayHub.Hex(),
+			Relay:      relayAddr.Hex(),
+		},
+		Metadata: "polycatch approvals",
+	}
+	transactionID, err := e.relayerSubmit(ctx, request)
+	if err != nil {
+		return err
+	}
+	return e.waitForRelayerConfirmation(ctx, transactionID)
+}
+
+func (e *Executor) executeSafeApprovals(
+	ctx context.Context,
+	safeAddress common.Address,
+	missingUSDC []common.Address,
+	missingCTF []common.Address,
+) error {
+	if strings.TrimSpace(e.config.RelayerURL) == "" {
+		return errors.New("RELAYER_URL is required for safe approvals (SignatureType=2)")
+	}
+	e.logSafeOwnerMatch(ctx, safeAddress, common.HexToAddress(e.signerAddress))
+
+	deployed, err := e.relayerGetDeployed(ctx, safeAddress.Hex())
+	if err != nil {
+		return fmt.Errorf("failed to check safe deployment: %w", err)
+	}
+	if !deployed {
+		if err := e.deploySafeWallet(ctx, safeAddress); err != nil {
+			return err
+		}
+	}
+
+	calls, err := e.buildApprovalCalls(missingUSDC, missingCTF)
+	if err != nil {
+		return err
+	}
+	if len(calls) == 0 {
+		return nil
+	}
+
+	nonceStr, err := e.relayerGetNonce(ctx, e.signerAddress, "SAFE")
+	if err != nil {
+		return fmt.Errorf("failed to get safe nonce: %w", err)
+	}
+	nonce, ok := new(big.Int).SetString(nonceStr, 10)
+	if !ok {
+		return fmt.Errorf("invalid safe nonce: %s", nonceStr)
+	}
+
+	safeCalls := make([]relayerSafeCall, 0, len(calls))
+	for _, call := range calls {
+		safeCalls = append(safeCalls, relayerSafeCall{
+			Operation: 0,
+			To:        call.To,
+			Value:     call.Value,
+			Data:      call.Data,
+		})
+	}
+
+	var tx relayerSafeCall
+	if len(safeCalls) == 1 {
+		tx = safeCalls[0]
+	} else {
+		multiSendAddr := common.HexToAddress(e.config.RelayerSafeMultisend)
+		multiSendData, err := encodeMultiSendData(safeCalls)
+		if err != nil {
+			return err
+		}
+		tx = relayerSafeCall{
+			Operation: 1,
+			To:        multiSendAddr,
+			Value:     big.NewInt(0),
+			Data:      multiSendData,
+		}
+	}
+
+	chainID := big.NewInt(e.config.ChainID)
+	digest := buildSafeTransactionDigest(
+		chainID,
+		safeAddress,
+		tx,
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		common.Address{},
+		common.Address{},
+		nonce,
+	)
+	sig, err := signPersonalHash(e.privateKey, digest)
+	if err != nil {
+		return fmt.Errorf("failed to sign safe approval: %w", err)
+	}
+	packedSig, err := packSafeSignature(sig)
+	if err != nil {
+		return fmt.Errorf("failed to pack safe signature: %w", err)
+	}
+
+	request := relayerTransactionRequest{
+		Type:        "SAFE",
+		From:        e.signerAddress,
+		To:          tx.To.Hex(),
+		ProxyWallet: safeAddress.Hex(),
+		Data:        hexutil.Encode(tx.Data),
+		Nonce:       nonceStr,
+		Signature:   packedSig,
+		SignatureParams: relayerSafeSignatureParams{
+			GasPrice:       "0",
+			Operation:      strconv.Itoa(int(tx.Operation)),
+			SafeTxnGas:     "0",
+			BaseGas:        "0",
+			GasToken:       common.Address{}.Hex(),
+			RefundReceiver: common.Address{}.Hex(),
+		},
+		Metadata: "polycatch approvals",
+	}
+	transactionID, err := e.relayerSubmit(ctx, request)
+	if err != nil {
+		return err
+	}
+	return e.waitForRelayerConfirmation(ctx, transactionID)
+}
+
+func (e *Executor) logSafeOwnerMatch(ctx context.Context, safeAddress common.Address, owner common.Address) {
+	client, err := e.ensureRPCClient(ctx)
+	if err != nil {
+		log.Printf("WARNING | failed to verify safe owner (rpc): %v", err)
+		return
+	}
+	code, err := client.CodeAt(ctx, safeAddress, nil)
+	if err != nil {
+		log.Printf("WARNING | failed to check safe code for %s: %v", safeAddress.Hex(), err)
+		return
+	}
+	if len(code) == 0 {
+		log.Printf("INFO | safe not deployed on-chain yet: %s", safeAddress.Hex())
+		return
+	}
+
+	parsedABI, err := getSafeOwnersABI()
+	if err != nil {
+		log.Printf("WARNING | failed to parse safe owners ABI: %v", err)
+		return
+	}
+	data, err := parsedABI.Pack("getOwners")
+	if err != nil {
+		log.Printf("WARNING | failed to pack getOwners call: %v", err)
+		return
+	}
+	callMsg := ethereum.CallMsg{
+		To:   &safeAddress,
+		Data: data,
+	}
+	result, err := client.CallContract(ctx, callMsg, nil)
+	if err != nil {
+		log.Printf("WARNING | failed to call getOwners for %s: %v", safeAddress.Hex(), err)
+		return
+	}
+
+	var owners []common.Address
+	if err := parsedABI.UnpackIntoInterface(&owners, "getOwners", result); err != nil {
+		log.Printf("WARNING | failed to unpack getOwners for %s: %v", safeAddress.Hex(), err)
+		return
+	}
+	if len(owners) == 1 && owners[0] == owner {
+		log.Printf("INFO | safe owner verified: safe=%s owner=%s", safeAddress.Hex(), owner.Hex())
+		return
+	}
+	log.Printf(
+		"WARNING | safe owner mismatch: safe=%s expected_owner=%s owners=%v",
+		safeAddress.Hex(),
+		owner.Hex(),
+		addressesToStrings(owners),
+	)
+}
+
+func (e *Executor) deploySafeWallet(ctx context.Context, safeAddress common.Address) error {
+	chainID := big.NewInt(e.config.ChainID)
+	factory := common.HexToAddress(e.config.RelayerSafeFactory)
+	paymentToken := common.Address{}
+	payment := big.NewInt(0)
+	paymentReceiver := common.Address{}
+
+	signature, err := buildSafeCreateSignature(
+		e.privateKey,
+		e.config.RelayerSafeFactoryName,
+		chainID,
+		factory,
+		paymentToken,
+		payment,
+		paymentReceiver,
+	)
+	if err != nil {
+		return err
+	}
+
+	request := relayerTransactionRequest{
+		Type:        "SAFE_CREATE",
+		From:        e.signerAddress,
+		To:          factory.Hex(),
+		ProxyWallet: safeAddress.Hex(),
+		Data:        "0x",
+		Signature:   signature,
+		SignatureParams: map[string]string{
+			"paymentToken":    paymentToken.Hex(),
+			"payment":         payment.String(),
+			"paymentReceiver": paymentReceiver.Hex(),
+		},
+		Metadata: "polycatch safe deploy",
+	}
+
+	transactionID, err := e.relayerSubmit(ctx, request)
+	if err != nil {
+		return err
+	}
+	return e.waitForRelayerConfirmation(ctx, transactionID)
+}
+
+type approvalCall struct {
+	To    common.Address
+	Value *big.Int
+	Data  []byte
+}
+
+func (e *Executor) buildApprovalCalls(
+	missingUSDC []common.Address,
+	missingCTF []common.Address,
+) ([]approvalCall, error) {
+	var calls []approvalCall
+	for _, spender := range missingUSDC {
+		data, err := e.packERC20ApproveData(spender, maxUint256())
+		if err != nil {
+			return nil, err
+		}
+		calls = append(calls, approvalCall{
+			To:    common.HexToAddress(e.config.USDCContract),
+			Value: big.NewInt(0),
+			Data:  data,
+		})
+	}
+	for _, operator := range missingCTF {
+		data, err := e.packERC1155ApprovalData(operator)
+		if err != nil {
+			return nil, err
+		}
+		calls = append(calls, approvalCall{
+			To:    common.HexToAddress(e.config.CTFContract),
+			Value: big.NewInt(0),
+			Data:  data,
+		})
+	}
+	return calls, nil
+}
+
+func (e *Executor) packERC20ApproveData(spender common.Address, amount *big.Int) ([]byte, error) {
+	parsedABI, err := getERC20AllowanceABI()
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse ERC20 ABI: %w", err)
+	}
+	data, err := parsedABI.Pack("approve", spender, amount)
+	if err != nil {
+		return nil, fmt.Errorf("failed to pack approve call: %w", err)
+	}
+	return data, nil
+}
+
+func (e *Executor) packERC1155ApprovalData(operator common.Address) ([]byte, error) {
+	parsedABI, err := getERC1155ApprovalABI()
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse ERC1155 ABI: %w", err)
+	}
+	data, err := parsedABI.Pack("setApprovalForAll", operator, true)
+	if err != nil {
+		return nil, fmt.Errorf("failed to pack setApprovalForAll call: %w", err)
+	}
+	return data, nil
+}
+
+func (e *Executor) findMissingApprovals(
+	ctx context.Context,
+	signal *types.TradeSignal,
+	maker common.Address,
+	makerAmount *big.Int,
+) ([]common.Address, []common.Address, error) {
+	if makerAmount.Sign() <= 0 {
+		return nil, nil, errors.New("maker amount must be greater than 0")
+	}
+
+	var missingUSDC []common.Address
+	var missingCTF []common.Address
+
+	if signal.Side == types.OrderSideBuy {
+		spenders := e.requiredUSDCSpenders(signal.NegRisk)
+		for _, spender := range spenders {
+			allowance, err := e.CheckUSDCAllowance(ctx, maker, spender)
+			if err != nil {
+				return nil, nil, fmt.Errorf("failed to check USDC allowance for %s: %w", spender.Hex(), err)
+			}
+			if allowance.Cmp(makerAmount) < 0 {
+				missingUSDC = append(missingUSDC, spender)
+			}
+		}
+	}
+
+	if signal.Side == types.OrderSideSell {
+		operators := e.requiredCTFOperators(signal.NegRisk)
+		for _, operator := range operators {
+			approved, err := e.CheckCTFApproval(ctx, maker, operator)
+			if err != nil {
+				return nil, nil, fmt.Errorf("failed to check CTF approval for %s: %w", operator.Hex(), err)
+			}
+			if !approved {
+				missingCTF = append(missingCTF, operator)
+			}
+		}
+	}
+
+	return missingUSDC, missingCTF, nil
+}
+
+func (e *Executor) requiredUSDCSpenders(negRisk bool) []common.Address {
+	spenders := []common.Address{
+		common.HexToAddress(e.config.CTFContract),
+		common.HexToAddress(e.config.CTFExchange),
+	}
+	if negRisk {
+		spenders = append(spenders,
+			common.HexToAddress(e.config.NegRiskCTFExchange),
+			common.HexToAddress(e.config.NegRiskAdapter),
+		)
+	}
+	return spenders
+}
+
+func (e *Executor) requiredCTFOperators(negRisk bool) []common.Address {
+	operators := []common.Address{
+		common.HexToAddress(e.config.CTFExchange),
+	}
+	if negRisk {
+		operators = append(operators,
+			common.HexToAddress(e.config.NegRiskCTFExchange),
+			common.HexToAddress(e.config.NegRiskAdapter),
+		)
+	}
+	return operators
+}
+
+func (e *Executor) waitForTxReceipt(ctx context.Context, txHash common.Hash) error {
+	client, err := e.ensureRPCClient(ctx)
+	if err != nil {
+		return err
+	}
+
+	timeout := time.NewTimer(60 * time.Second)
+	ticker := time.NewTicker(2 * time.Second)
+	defer timeout.Stop()
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timeout.C:
+			return errors.New("timed out waiting for transaction receipt")
+		case <-ticker.C:
+			receipt, err := client.TransactionReceipt(ctx, txHash)
+			if err != nil {
+				continue
+			}
+			if receipt.Status != 1 {
+				return fmt.Errorf("transaction reverted (status=%d)", receipt.Status)
+			}
+			return nil
+		}
+	}
+}
+
+func addressesToStrings(addrs []common.Address) []string {
+	if len(addrs) == 0 {
+		return nil
+	}
+	result := make([]string, 0, len(addrs))
+	for _, addr := range addrs {
+		result = append(result, addr.Hex())
+	}
+	return result
+}
+
 // GetCurrentPrice fetches the current SELL price for a token (for cashing out positions)
 func (e *Executor) GetCurrentPrice(ctx context.Context, tokenID string) (float64, error) {
 	priceStr, err := e.getCurrentPrice(ctx, tokenID, types.OrderSideSell)
@@ -1237,9 +2613,9 @@ func (e *Executor) getCurrentPrice(ctx context.Context, tokenID string, side typ
 	}
 
 	// Add L2 authentication headers
-	apiKey := strings.TrimSpace(e.config.BuilderAPIKey)
-	apiSecret := strings.TrimSpace(e.config.BuilderSecret)
-	apiPassphrase := strings.TrimSpace(e.config.BuilderPassphrase)
+	apiKey := strings.TrimSpace(e.config.CLOBAPIKey)
+	apiSecret := strings.TrimSpace(e.config.CLOBAPISecret)
+	apiPassphrase := strings.TrimSpace(e.config.CLOBAPIPassphrase)
 
 	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
 
@@ -1248,16 +2624,7 @@ func (e *Executor) getCurrentPrice(ctx context.Context, tokenID string, side typ
 	message := fmt.Sprintf("%s%s%s", timestamp, "GET", path)
 
 	// Generate HMAC-SHA256 signature
-	// Secret is base64 URL-safe encoded, decode it first
-	secretBytes, decodeErr := base64.URLEncoding.DecodeString(apiSecret)
-	if decodeErr != nil {
-		// Try standard base64 if URL-safe fails
-		secretBytes, decodeErr = base64.StdEncoding.DecodeString(apiSecret)
-		if decodeErr != nil {
-			// If not base64, use as-is
-			secretBytes = []byte(apiSecret)
-		}
-	}
+	secretBytes := decodeBuilderSecret(apiSecret)
 	mac := hmac.New(sha256.New, secretBytes)
 	mac.Write([]byte(message))
 	// Encode signature using base64 URL-safe encoding (per official client)
@@ -1624,22 +2991,16 @@ func (e *Executor) GetCollateralBalanceAllowance(ctx context.Context) (*big.Int,
 	}
 
 	// Add L2 authentication headers
-	apiKey := strings.TrimSpace(e.config.BuilderAPIKey)
-	apiSecret := strings.TrimSpace(e.config.BuilderSecret)
-	apiPassphrase := strings.TrimSpace(e.config.BuilderPassphrase)
+	apiKey := strings.TrimSpace(e.config.CLOBAPIKey)
+	apiSecret := strings.TrimSpace(e.config.CLOBAPISecret)
+	apiPassphrase := strings.TrimSpace(e.config.CLOBAPIPassphrase)
 
 	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
 
 	// Create message for HMAC: timestamp + method + path + body (body is empty for GET)
 	message := fmt.Sprintf("%s%s%s", timestamp, "GET", path)
 
-	secretBytes, decodeErr := base64.URLEncoding.DecodeString(apiSecret)
-	if decodeErr != nil {
-		secretBytes, decodeErr = base64.StdEncoding.DecodeString(apiSecret)
-		if decodeErr != nil {
-			secretBytes = []byte(apiSecret)
-		}
-	}
+	secretBytes := decodeBuilderSecret(apiSecret)
 	mac := hmac.New(sha256.New, secretBytes)
 	mac.Write([]byte(message))
 	hmacSignature := base64.URLEncoding.EncodeToString(mac.Sum(nil))
@@ -1858,20 +3219,14 @@ func (e *Executor) GetOpenOrders(ctx context.Context) ([]*OpenOrder, error) {
 	}
 
 	// Add L2 authentication headers
-	apiKey := strings.TrimSpace(e.config.BuilderAPIKey)
-	apiSecret := strings.TrimSpace(e.config.BuilderSecret)
-	apiPassphrase := strings.TrimSpace(e.config.BuilderPassphrase)
+	apiKey := strings.TrimSpace(e.config.CLOBAPIKey)
+	apiSecret := strings.TrimSpace(e.config.CLOBAPISecret)
+	apiPassphrase := strings.TrimSpace(e.config.CLOBAPIPassphrase)
 
 	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
 	message := fmt.Sprintf("%s%s%s", timestamp, "GET", path)
 
-	secretBytes, decodeErr := base64.URLEncoding.DecodeString(apiSecret)
-	if decodeErr != nil {
-		secretBytes, decodeErr = base64.StdEncoding.DecodeString(apiSecret)
-		if decodeErr != nil {
-			secretBytes = []byte(apiSecret)
-		}
-	}
+	secretBytes := decodeBuilderSecret(apiSecret)
 
 	mac := hmac.New(sha256.New, secretBytes)
 	mac.Write([]byte(message))
@@ -1949,20 +3304,14 @@ func (e *Executor) GetActiveOrders(ctx context.Context, id string, market string
 	}
 
 	// Add L2 authentication headers
-	apiKey := strings.TrimSpace(e.config.BuilderAPIKey)
-	apiSecret := strings.TrimSpace(e.config.BuilderSecret)
-	apiPassphrase := strings.TrimSpace(e.config.BuilderPassphrase)
+	apiKey := strings.TrimSpace(e.config.CLOBAPIKey)
+	apiSecret := strings.TrimSpace(e.config.CLOBAPISecret)
+	apiPassphrase := strings.TrimSpace(e.config.CLOBAPIPassphrase)
 
 	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
 	message := fmt.Sprintf("%s%s%s", timestamp, "GET", path)
 
-	secretBytes, decodeErr := base64.URLEncoding.DecodeString(apiSecret)
-	if decodeErr != nil {
-		secretBytes, decodeErr = base64.StdEncoding.DecodeString(apiSecret)
-		if decodeErr != nil {
-			secretBytes = []byte(apiSecret)
-		}
-	}
+	secretBytes := decodeBuilderSecret(apiSecret)
 
 	mac := hmac.New(sha256.New, secretBytes)
 	mac.Write([]byte(message))
@@ -2028,20 +3377,14 @@ func (e *Executor) CancelOrder(ctx context.Context, orderID string) error {
 	}
 
 	// Add L2 authentication headers
-	apiKey := strings.TrimSpace(e.config.BuilderAPIKey)
-	apiSecret := strings.TrimSpace(e.config.BuilderSecret)
-	apiPassphrase := strings.TrimSpace(e.config.BuilderPassphrase)
+	apiKey := strings.TrimSpace(e.config.CLOBAPIKey)
+	apiSecret := strings.TrimSpace(e.config.CLOBAPISecret)
+	apiPassphrase := strings.TrimSpace(e.config.CLOBAPIPassphrase)
 
 	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
 	message := fmt.Sprintf("%s%s%s%s", timestamp, "DELETE", path, string(bodyBytes))
 
-	secretBytes, decodeErr := base64.URLEncoding.DecodeString(apiSecret)
-	if decodeErr != nil {
-		secretBytes, decodeErr = base64.StdEncoding.DecodeString(apiSecret)
-		if decodeErr != nil {
-			secretBytes = []byte(apiSecret)
-		}
-	}
+	secretBytes := decodeBuilderSecret(apiSecret)
 
 	mac := hmac.New(sha256.New, secretBytes)
 	mac.Write([]byte(message))
@@ -2102,20 +3445,14 @@ func (e *Executor) GetTradeHistory(ctx context.Context, limit int) ([]*Trade, er
 	}
 
 	// Add L2 authentication headers
-	apiKey := strings.TrimSpace(e.config.BuilderAPIKey)
-	apiSecret := strings.TrimSpace(e.config.BuilderSecret)
-	apiPassphrase := strings.TrimSpace(e.config.BuilderPassphrase)
+	apiKey := strings.TrimSpace(e.config.CLOBAPIKey)
+	apiSecret := strings.TrimSpace(e.config.CLOBAPISecret)
+	apiPassphrase := strings.TrimSpace(e.config.CLOBAPIPassphrase)
 
 	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
 	message := fmt.Sprintf("%s%s%s", timestamp, "GET", path)
 
-	secretBytes, decodeErr := base64.URLEncoding.DecodeString(apiSecret)
-	if decodeErr != nil {
-		secretBytes, decodeErr = base64.StdEncoding.DecodeString(apiSecret)
-		if decodeErr != nil {
-			secretBytes = []byte(apiSecret)
-		}
-	}
+	secretBytes := decodeBuilderSecret(apiSecret)
 
 	mac := hmac.New(sha256.New, secretBytes)
 	mac.Write([]byte(message))

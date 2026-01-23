@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"time"
@@ -231,16 +232,17 @@ func (f *BTCMarketFetcher) fetch15MinMarket(ctx context.Context, timestamp int64
 	}
 
 	// Override Gamma prices with live prices from CLOB so refresh matches the web UI.
-	liveUp, err := f.fetchLivePrice(ctx, tokenIds[0])
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch live UP price (token %s): %w", tokenIds[0], err)
+	// If CLOB is unreachable, fall back to Gamma prices.
+	if liveUp, err := f.fetchLivePrice(ctx, tokenIds[0]); err == nil {
+		upPrice = liveUp
+	} else {
+		log.Printf("WARNING | failed to fetch live UP price (token %s): %v", tokenIds[0], err)
 	}
-	liveDown, err := f.fetchLivePrice(ctx, tokenIds[1])
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch live DOWN price (token %s): %w", tokenIds[1], err)
+	if liveDown, err := f.fetchLivePrice(ctx, tokenIds[1]); err == nil {
+		downPrice = liveDown
+	} else {
+		log.Printf("WARNING | failed to fetch live DOWN price (token %s): %v", tokenIds[1], err)
 	}
-	upPrice = liveUp
-	downPrice = liveDown
 
 	volume, _ := strconv.ParseFloat(market.Volume, 64)
 	liquidity, _ := strconv.ParseFloat(market.Liquidity, 64)

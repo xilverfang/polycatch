@@ -342,6 +342,7 @@ The executor will automatically connect to the monitor via Unix socket.
 | `POLYGON_WSS_URL` | Polygon WebSocket RPC endpoint | `wss://polygon-mainnet.g.alchemy.com/v2/KEY` |
 | `SIGNER_PRIVATE_KEY` | MetaMask private key (with 0x) | `0x1234...` |
 | `FUNDER_ADDRESS` | Polymarket funder/proxy address | `0xabcd...` |
+| `SIGNATURE_TYPE` | 0=EOA, 1=POLY_PROXY, 2=POLY_GNOSIS_SAFE | `2` |
 | `BUILDER_API_KEY` | Polymarket Builder API key | `550e8400-...` |
 | `BUILDER_SECRET` | Polymarket Builder API secret | `base64...` |
 | `BUILDER_PASSPHRASE` | Polymarket Builder API passphrase | `passphrase` |
@@ -355,6 +356,23 @@ The executor will automatically connect to the monitor via Unix socket.
 | `INTERACTIVE_MODE` | Prompt for trade amount | `true` |
 | `MIN_TRADE_AMOUNT` | Minimum trade amount (USD) | `1` |
 | `MAX_TRADE_PERCENT` | Max balance % per trade (auto-mode) | `100` |
+
+### Relayer Variables (proxy/safe approvals)
+
+These are only needed if you override the defaults. They control the Polymarket relayer used for
+proxy/safe approvals (SignatureType 1/2).
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `RELAYER_URL` | Polymarket relayer base URL | `https://relayer-v2.polymarket.com` |
+| `RELAYER_PROXY_FACTORY` | Proxy factory address | `0xaB45c5A4B0c941a2F231C04C3f49182e1A254052` |
+| `RELAYER_RELAY_HUB` | Relay hub address | `0xD216153c06E857cD7f72665E0aF1d7D82172F494` |
+| `RELAYER_SAFE_FACTORY` | Safe factory address | `0xaacFeEa03eb1561C4e67d661e40682Bd20E3541b` |
+| `RELAYER_SAFE_MULTISEND` | Safe multisend address | `0xA238CBeb142c10Ef7Ad8442C6D1f9E89e07e7761` |
+| `RELAYER_SAFE_INIT_CODE` | Safe init code hash | `0x2bce...` |
+| `RELAYER_PROXY_INIT_CODE` | Proxy init code hash | `0xd21d...` |
+| `RELAYER_SAFE_FACTORY_NAME` | Safe factory name for EIP-712 | `Polymarket Contract Proxy Factory` |
+| `RELAYER_PROXY_GAS_LIMIT` | Proxy approval gas limit | `10000000` |
 
 ## How It Works
 

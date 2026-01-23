@@ -17,6 +17,12 @@ type Config struct {
 	ChainID       int64
 	USDCContract  string // USDC.e contract address on Polygon
 
+	// Polymarket Trading Contracts
+	CTFContract        string // CTF (ERC1155) conditional tokens contract
+	CTFExchange        string // CTF Exchange (regular markets)
+	NegRiskCTFExchange string // Neg Risk CTF Exchange (neg risk markets)
+	NegRiskAdapter     string // Neg Risk Adapter (helper for neg risk markets)
+
 	// Wallet Configuration
 	SignerPrivateKey string
 	FunderAddress    string
@@ -27,6 +33,11 @@ type Config struct {
 	BuilderSecret     string
 	BuilderPassphrase string
 
+	// Polymarket CLOB API Credentials (L2 auth)
+	CLOBAPIKey        string
+	CLOBAPISecret     string
+	CLOBAPIPassphrase string
+
 	// Polymarket API Endpoints
 	GammaAPIURL string
 	DataAPIURL  string
@@ -36,6 +47,17 @@ type Config struct {
 	// These are the factory contracts that deploy proxy wallets
 	GnosisSafeFactory      string // Gnosis Safe factory (type 2) - 0xaacfeea03eb1561c4e67d661e40682bd20e3541b
 	PolymarketProxyFactory string // Polymarket Proxy factory (type 1) - 0xaB45c5A4B0c941a2F231C04C3f49182e1A254052
+
+	// Polymarket Relayer Configuration (for proxy/safe approvals)
+	RelayerURL             string
+	RelayerProxyFactory    string
+	RelayerRelayHub        string
+	RelayerSafeFactory     string
+	RelayerSafeMultisend   string
+	RelayerSafeInitCode    string
+	RelayerProxyInitCode   string
+	RelayerSafeFactoryName string
+	RelayerProxyGasLimit   uint64
 
 	// Trading Configuration
 	MinDepositAmount  *big.Int // Minimum deposit in USDC.e (wei units, 6 decimals for USDC)
@@ -56,13 +78,26 @@ func Load() (*Config, error) {
 		PolygonWSSURL:          getEnv("POLYGON_WSS_URL", ""),
 		ChainID:                137, // Polygon mainnet
 		USDCContract:           "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+		CTFContract:            "0x4d97dcd97ec945f40cf65f87097ace5ea0476045",
+		CTFExchange:            "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E",
+		NegRiskCTFExchange:     "0xC5d563A36AE78145C45a50134d48A1215220f80a",
+		NegRiskAdapter:         "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296",
 		SignatureType:          1, // POLY_PROXY (email/Google login) - change to 2 for browser wallet, 0 for EOA
 		GammaAPIURL:            "https://gamma-api.polymarket.com",
 		DataAPIURL:             "https://data-api.polymarket.com",
 		CLOBAPIURL:             "https://clob.polymarket.com",
 		GnosisSafeFactory:      "0xaacfeea03eb1561c4e67d661e40682bd20e3541b", // Gnosis Safe factory (type 2)
 		PolymarketProxyFactory: "0xaB45c5A4B0c941a2F231C04C3f49182e1A254052", // Polymarket Proxy factory (type 1)
-		SlippageTolerance:      3,                                            // Default 3%
+		RelayerURL:             "https://relayer-v2.polymarket.com",
+		RelayerProxyFactory:    "0xaB45c5A4B0c941a2F231C04C3f49182e1A254052",
+		RelayerRelayHub:        "0xD216153c06E857cD7f72665E0aF1d7D82172F494",
+		RelayerSafeFactory:     "0xaacFeEa03eb1561C4e67d661e40682Bd20E3541b",
+		RelayerSafeMultisend:   "0xA238CBeb142c10Ef7Ad8442C6D1f9E89e07e7761",
+		RelayerSafeInitCode:    "0x2bce2127ff07fb632d16c8347c4ebf501f4841168bed00d9e6ef715ddb6fcecf",
+		RelayerProxyInitCode:   "0xd21df8dc65880a8606f09fe0ce3df9b8869287ab0b058be05aa9e8af6330a00b",
+		RelayerSafeFactoryName: "Polymarket Contract Proxy Factory",
+		RelayerProxyGasLimit:   10_000_000,
+		SlippageTolerance:      3, // Default 3%
 	}
 
 	// Required fields
@@ -71,6 +106,31 @@ func Load() (*Config, error) {
 	cfg.BuilderAPIKey = getEnv("BUILDER_API_KEY", "")
 	cfg.BuilderSecret = getEnv("BUILDER_SECRET", "")
 	cfg.BuilderPassphrase = getEnv("BUILDER_PASSPHRASE", "")
+	cfg.CLOBAPIKey = getEnv("CLOB_API_KEY", "")
+	cfg.CLOBAPISecret = getEnv("CLOB_API_SECRET", "")
+	cfg.CLOBAPIPassphrase = getEnv("CLOB_API_PASSPHRASE", "")
+	if signatureTypeStr := getEnv("SIGNATURE_TYPE", ""); signatureTypeStr != "" {
+		signatureType, err := strconv.Atoi(signatureTypeStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid SIGNATURE_TYPE: %w", err)
+		}
+		cfg.SignatureType = signatureType
+	}
+	cfg.RelayerURL = getEnv("RELAYER_URL", cfg.RelayerURL)
+	cfg.RelayerProxyFactory = getEnv("RELAYER_PROXY_FACTORY", cfg.RelayerProxyFactory)
+	cfg.RelayerRelayHub = getEnv("RELAYER_RELAY_HUB", cfg.RelayerRelayHub)
+	cfg.RelayerSafeFactory = getEnv("RELAYER_SAFE_FACTORY", cfg.RelayerSafeFactory)
+	cfg.RelayerSafeMultisend = getEnv("RELAYER_SAFE_MULTISEND", cfg.RelayerSafeMultisend)
+	cfg.RelayerSafeInitCode = getEnv("RELAYER_SAFE_INIT_CODE", cfg.RelayerSafeInitCode)
+	cfg.RelayerProxyInitCode = getEnv("RELAYER_PROXY_INIT_CODE", cfg.RelayerProxyInitCode)
+	cfg.RelayerSafeFactoryName = getEnv("RELAYER_SAFE_FACTORY_NAME", cfg.RelayerSafeFactoryName)
+	if gasLimitStr := getEnv("RELAYER_PROXY_GAS_LIMIT", ""); gasLimitStr != "" {
+		gasLimit, err := strconv.ParseUint(gasLimitStr, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid RELAYER_PROXY_GAS_LIMIT: %w", err)
+		}
+		cfg.RelayerProxyGasLimit = gasLimit
+	}
 
 	// Optional: Minimum deposit amount (default $10,000)
 	minDepositStr := getEnv("MIN_DEPOSIT_AMOUNT", "50000")
@@ -143,20 +203,30 @@ func (c *Config) Validate() error {
 		errs = append(errs, "FUNDER_ADDRESS must be a valid Ethereum address (0x + 40 chars)")
 	}
 
-	if c.BuilderAPIKey == "" {
-		errs = append(errs, "BUILDER_API_KEY is required")
+	if c.CLOBAPIKey == "" {
+		errs = append(errs, "CLOB_API_KEY is required")
 	}
-
-	if c.BuilderSecret == "" {
-		errs = append(errs, "BUILDER_SECRET is required")
+	if c.CLOBAPISecret == "" {
+		errs = append(errs, "CLOB_API_SECRET is required")
 	}
-
-	if c.BuilderPassphrase == "" {
-		errs = append(errs, "BUILDER_PASSPHRASE is required")
+	if c.CLOBAPIPassphrase == "" {
+		errs = append(errs, "CLOB_API_PASSPHRASE is required")
 	}
 
 	if !isValidAddress(c.USDCContract) {
 		errs = append(errs, "USDCContract must be a valid Ethereum address")
+	}
+	if !isValidAddress(c.CTFContract) {
+		errs = append(errs, "CTFContract must be a valid Ethereum address")
+	}
+	if !isValidAddress(c.CTFExchange) {
+		errs = append(errs, "CTFExchange must be a valid Ethereum address")
+	}
+	if !isValidAddress(c.NegRiskCTFExchange) {
+		errs = append(errs, "NegRiskCTFExchange must be a valid Ethereum address")
+	}
+	if !isValidAddress(c.NegRiskAdapter) {
+		errs = append(errs, "NegRiskAdapter must be a valid Ethereum address")
 	}
 
 	if c.MinDepositAmount == nil || c.MinDepositAmount.Sign() <= 0 {
@@ -171,10 +241,42 @@ func (c *Config) Validate() error {
 		errs = append(errs, "ChainID must be 137 (Polygon mainnet)")
 	}
 
+	if c.RelayerURL == "" {
+		errs = append(errs, "RelayerURL must be set")
+	} else if !strings.HasPrefix(c.RelayerURL, "https://") && !strings.HasPrefix(c.RelayerURL, "http://") {
+		errs = append(errs, "RelayerURL must be an HTTP(S) URL")
+	}
+	if !isValidAddress(c.RelayerProxyFactory) {
+		errs = append(errs, "RelayerProxyFactory must be a valid Ethereum address")
+	}
+	if !isValidAddress(c.RelayerRelayHub) {
+		errs = append(errs, "RelayerRelayHub must be a valid Ethereum address")
+	}
+	if !isValidAddress(c.RelayerSafeFactory) {
+		errs = append(errs, "RelayerSafeFactory must be a valid Ethereum address")
+	}
+	if !isValidAddress(c.RelayerSafeMultisend) {
+		errs = append(errs, "RelayerSafeMultisend must be a valid Ethereum address")
+	}
+	if !isValidHex32(c.RelayerSafeInitCode) {
+		errs = append(errs, "RelayerSafeInitCode must be a 32-byte hex string")
+	}
+	if !isValidHex32(c.RelayerProxyInitCode) {
+		errs = append(errs, "RelayerProxyInitCode must be a 32-byte hex string")
+	}
+	if strings.TrimSpace(c.RelayerSafeFactoryName) == "" {
+		errs = append(errs, "RelayerSafeFactoryName must be set")
+	}
+	if c.RelayerProxyGasLimit == 0 {
+		errs = append(errs, "RelayerProxyGasLimit must be greater than 0")
+	}
+
 	// SignatureType: 0=EOA, 1=POLY_PROXY (email/Google login), 2=POLY_GNOSIS_SAFE (browser wallet)
 	if c.SignatureType < 0 || c.SignatureType > 2 {
 		errs = append(errs, "SignatureType must be 0 (EOA), 1 (POLY_PROXY), or 2 (POLY_GNOSIS_SAFE)")
 	}
+
+	// Builder keys are only required when submitting relayer approvals.
 
 	if len(errs) > 0 {
 		return errors.New(strings.Join(errs, "; "))
@@ -277,6 +379,22 @@ func isValidAddress(addr string) bool {
 	}
 	// Check if remaining characters are valid hex
 	for _, c := range addr[2:] {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
+func isValidHex32(value string) bool {
+	value = strings.TrimSpace(value)
+	if !strings.HasPrefix(value, "0x") {
+		return false
+	}
+	if len(value) != 66 {
+		return false
+	}
+	for _, c := range value[2:] {
 		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
 			return false
 		}

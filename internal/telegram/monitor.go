@@ -7,6 +7,7 @@ import (
 	"math/big"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -482,23 +483,57 @@ type TradeResult struct {
 
 // buildConfigFromCreds creates a config from user credentials
 func buildConfigFromCreds(creds *DecryptedCredentials) *config.Config {
+	signatureType := 2
+	if sigStr := os.Getenv("SIGNATURE_TYPE"); sigStr != "" {
+		if parsed, err := strconv.Atoi(sigStr); err == nil {
+			signatureType = parsed
+		}
+	}
+	builderAPIKey := strings.TrimSpace(creds.BuilderAPIKey)
+	builderSecret := strings.TrimSpace(creds.BuilderAPISecret)
+	builderPassphrase := strings.TrimSpace(creds.BuilderAPIPassphrase)
+	if builderAPIKey == "" {
+		builderAPIKey = getEnvOrDefault("BUILDER_API_KEY", "")
+	}
+	if builderSecret == "" {
+		builderSecret = getEnvOrDefault("BUILDER_SECRET", "")
+	}
+	if builderPassphrase == "" {
+		builderPassphrase = getEnvOrDefault("BUILDER_PASSPHRASE", "")
+	}
 	return &config.Config{
-		SignerPrivateKey:  creds.SignerPrivateKey,
-		FunderAddress:     creds.FunderAddress,
-		BuilderAPIKey:     creds.APIKey,
-		BuilderSecret:     creds.APISecret,
-		BuilderPassphrase: creds.APIPassphrase,
-		PolygonWSSURL:     getEnvOrDefault("POLYGON_WSS_URL", "wss://polygon-mainnet.g.alchemy.com/v2/demo"),
-		CLOBAPIURL:        "https://clob.polymarket.com",
-		DataAPIURL:        "https://data-api.polymarket.com",
-		ChainID:           137,
-		SignatureType:     2,                              // POLY_GNOSIS_SAFE (browser wallet via Polymarket). Use 1 for POLY_PROXY (email/Google), 0 for EOA
-		MinDepositAmount:  parseMinDeposit("10000000000"), // $10,000 in micro-USDC
-		MinTradeAmount:    parseMinDeposit("1000000"),     // $1 minimum trade (1,000,000 micro-USDC)
-		USDCContract:      "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
-		SlippageTolerance: 3,
-		MaxTradePercent:   100,
-		InteractiveMode:   false, // No interactive prompts in Telegram mode
+		SignerPrivateKey:       creds.SignerPrivateKey,
+		FunderAddress:          creds.FunderAddress,
+		CLOBAPIKey:             creds.APIKey,
+		CLOBAPISecret:          creds.APISecret,
+		CLOBAPIPassphrase:      creds.APIPassphrase,
+		BuilderAPIKey:          builderAPIKey,
+		BuilderSecret:          builderSecret,
+		BuilderPassphrase:      builderPassphrase,
+		PolygonWSSURL:          getEnvOrDefault("POLYGON_WSS_URL", "wss://polygon-mainnet.g.alchemy.com/v2/demo"),
+		CLOBAPIURL:             "https://clob.polymarket.com",
+		DataAPIURL:             "https://data-api.polymarket.com",
+		ChainID:                137,
+		SignatureType:          signatureType,                  // POLY_GNOSIS_SAFE (browser wallet via Polymarket). Use 1 for POLY_PROXY (email/Google), 0 for EOA
+		MinDepositAmount:       parseMinDeposit("10000000000"), // $10,000 in micro-USDC
+		MinTradeAmount:         parseMinDeposit("1000000"),     // $1 minimum trade (1,000,000 micro-USDC)
+		USDCContract:           "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+		CTFContract:            "0x4d97dcd97ec945f40cf65f87097ace5ea0476045",
+		CTFExchange:            "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E",
+		NegRiskCTFExchange:     "0xC5d563A36AE78145C45a50134d48A1215220f80a",
+		NegRiskAdapter:         "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296",
+		RelayerURL:             getEnvOrDefault("RELAYER_URL", "https://relayer-v2.polymarket.com"),
+		RelayerProxyFactory:    getEnvOrDefault("RELAYER_PROXY_FACTORY", "0xaB45c5A4B0c941a2F231C04C3f49182e1A254052"),
+		RelayerRelayHub:        getEnvOrDefault("RELAYER_RELAY_HUB", "0xD216153c06E857cD7f72665E0aF1d7D82172F494"),
+		RelayerSafeFactory:     getEnvOrDefault("RELAYER_SAFE_FACTORY", "0xaacFeEa03eb1561C4e67d661e40682Bd20E3541b"),
+		RelayerSafeMultisend:   getEnvOrDefault("RELAYER_SAFE_MULTISEND", "0xA238CBeb142c10Ef7Ad8442C6D1f9E89e07e7761"),
+		RelayerSafeInitCode:    getEnvOrDefault("RELAYER_SAFE_INIT_CODE", "0x2bce2127ff07fb632d16c8347c4ebf501f4841168bed00d9e6ef715ddb6fcecf"),
+		RelayerProxyInitCode:   getEnvOrDefault("RELAYER_PROXY_INIT_CODE", "0xd21df8dc65880a8606f09fe0ce3df9b8869287ab0b058be05aa9e8af6330a00b"),
+		RelayerSafeFactoryName: getEnvOrDefault("RELAYER_SAFE_FACTORY_NAME", "Polymarket Contract Proxy Factory"),
+		RelayerProxyGasLimit:   10_000_000,
+		SlippageTolerance:      3,
+		MaxTradePercent:        100,
+		InteractiveMode:        false, // No interactive prompts in Telegram mode
 	}
 }
 

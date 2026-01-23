@@ -4,11 +4,14 @@ import "errors"
 
 // Validation errors
 var (
-	ErrMissingSignerKey     = errors.New("signer private key is required")
-	ErrMissingFunderAddress = errors.New("funder address is required")
-	ErrMissingAPIKey        = errors.New("API key is required")
-	ErrMissingAPISecret     = errors.New("API secret is required")
-	ErrMissingAPIPassphrase = errors.New("API passphrase is required")
+	ErrMissingSignerKey            = errors.New("signer private key is required")
+	ErrMissingFunderAddress        = errors.New("funder address is required")
+	ErrMissingAPIKey               = errors.New("API key is required")
+	ErrMissingAPISecret            = errors.New("API secret is required")
+	ErrMissingAPIPassphrase        = errors.New("API passphrase is required")
+	ErrMissingBuilderAPIKey        = errors.New("builder API key is required")
+	ErrMissingBuilderAPISecret     = errors.New("builder API secret is required")
+	ErrMissingBuilderAPIPassphrase = errors.New("builder API passphrase is required")
 )
 
 // Database errors

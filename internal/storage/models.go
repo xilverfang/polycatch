@@ -17,16 +17,27 @@ type UserCredentials struct {
 	// Format: "0x..." (40 hex chars after prefix)
 	FunderAddress string `json:"funder_address"`
 
-	// APIKey is the Polymarket Builder API key
+	// APIKey is the Polymarket CLOB API key
 	// Format: UUID "550e8400-e29b-41d4-a716-446655440000"
 	APIKey string `json:"api_key"`
 
-	// APISecret is the Polymarket Builder API secret for HMAC-SHA256
+	// APISecret is the Polymarket CLOB API secret for HMAC-SHA256
 	// Format: Base64 encoded string
 	APISecret string `json:"api_secret"`
 
-	// APIPassphrase is the Polymarket Builder API passphrase
+	// APIPassphrase is the Polymarket CLOB API passphrase
 	APIPassphrase string `json:"api_passphrase"`
+
+	// BuilderAPIKey is the Polymarket Builder API key (for relayer approvals)
+	// Format: UUID "550e8400-e29b-41d4-a716-446655440000"
+	BuilderAPIKey string `json:"builder_api_key"`
+
+	// BuilderAPISecret is the Polymarket Builder API secret for HMAC-SHA256
+	// Format: Base64 encoded string
+	BuilderAPISecret string `json:"builder_api_secret"`
+
+	// BuilderAPIPassphrase is the Polymarket Builder API passphrase
+	BuilderAPIPassphrase string `json:"builder_api_passphrase"`
 }
 
 // Validate checks if all required fields are present
@@ -45,6 +56,17 @@ func (c *UserCredentials) Validate() error {
 	}
 	if c.APIPassphrase == "" {
 		return ErrMissingAPIPassphrase
+	}
+	if c.BuilderAPIKey != "" || c.BuilderAPISecret != "" || c.BuilderAPIPassphrase != "" {
+		if c.BuilderAPIKey == "" {
+			return ErrMissingBuilderAPIKey
+		}
+		if c.BuilderAPISecret == "" {
+			return ErrMissingBuilderAPISecret
+		}
+		if c.BuilderAPIPassphrase == "" {
+			return ErrMissingBuilderAPIPassphrase
+		}
 	}
 	return nil
 }
