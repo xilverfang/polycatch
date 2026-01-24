@@ -169,10 +169,11 @@ type TradeSignal struct {
 	NegRisk bool // True if NegRiskCTFExchange, false if CTFExchange
 
 	// Trading parameters
-	Price       string // Price to execute at (from insider order or calculated)
-	Size        string // Size to trade
-	MaxSlippage int    // Maximum slippage tolerance (percentage)
-	OrderType   string // CLOB order type, e.g. "FAK" or "GTC" (default: "FAK")
+	Price        string // Price to execute at (from insider order or calculated)
+	Size         string // Size to trade
+	SizeIsShares bool   // If true, Size is in micro-shares (for sell)
+	MaxSlippage  int    // Maximum slippage tolerance (percentage)
+	OrderType    string // CLOB order type, e.g. "FAK" or "GTC" (default: "FAK")
 	// ExpirationUnix is required for GTD orders (unix seconds). For non-GTD orders it should be 0.
 	ExpirationUnix int64
 

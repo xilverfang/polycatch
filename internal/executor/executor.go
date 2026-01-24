@@ -1576,9 +1576,7 @@ func (e *Executor) buildAndSubmitOrder(ctx context.Context, signal *types.TradeS
 		}
 	}
 
-	// In Telegram execution, signal.Size is treated as an amount of USDC (micro-USDC, 6 decimals).
-	// UserMonitor.ExecuteTrade enforces this by overwriting Size based on the user-selected USD amount.
-	amountUSDCMicro, err := strconv.ParseInt(signal.Size, 10, 64)
+	sizeRaw, err := strconv.ParseInt(signal.Size, 10, 64)
 	if err != nil {
 		return "", fmt.Errorf("failed to parse size: %w", err)
 	}
@@ -1595,8 +1593,8 @@ func (e *Executor) buildAndSubmitOrder(ctx context.Context, signal *types.TradeS
 	// - Share amounts (taker for BUY / maker for SELL) may support up to 5 decimals on some markets.
 	var makerAmount, takerAmount int64
 	var side int
-	if amountUSDCMicro <= 0 {
-		return "", fmt.Errorf("trade amount must be > 0 (got %d micro-USDC)", amountUSDCMicro)
+	if sizeRaw <= 0 {
+		return "", fmt.Errorf("trade size must be > 0 (got %d)", sizeRaw)
 	}
 
 	tickSize, err := e.getTickSize(ctx, signal.TokenID)
@@ -1608,15 +1606,29 @@ func (e *Executor) buildAndSubmitOrder(ctx context.Context, signal *types.TradeS
 		return "", fmt.Errorf("failed to resolve rounding config for tick size %s (token %s): %w", tickSize, signal.TokenID, err)
 	}
 
-	usdcMicroRounded, sharesMicroRounded, err := computeOrderMicroAmounts(
-		rc,
-		orderType,
-		signal.Price,
-		amountUSDCMicro,
-	)
+	var usdcMicroRounded int64
+	var sharesMicroRounded int64
+	if signal.Side == types.OrderSideSell && signal.SizeIsShares {
+		usdcMicroRounded, sharesMicroRounded, err = computeOrderMicroAmountsFromShares(
+			rc,
+			orderType,
+			signal.Price,
+			sizeRaw,
+		)
+	} else {
+		// In Telegram execution, signal.Size is treated as an amount of USDC (micro-USDC, 6 decimals).
+		// UserMonitor.ExecuteTrade enforces this by overwriting Size based on the user-selected USD amount.
+		usdcMicroRounded, sharesMicroRounded, err = computeOrderMicroAmounts(
+			rc,
+			orderType,
+			signal.Price,
+			sizeRaw,
+		)
+	}
 	if err != nil {
 		return "", fmt.Errorf("failed to compute order amounts: %w", err)
 	}
+	amountUSDCMicro := usdcMicroRounded
 
 	log.Printf("DEBUG | Rounding config for tick-size %s: priceDecimals=%d, sizeDecimals=%d, amountDecimals=%d", tickSize, rc.priceDecimals, rc.sizeDecimals, rc.amountDecimals)
 	log.Printf("DEBUG | Final amounts: USDC=%d micro ($%.6f), shares=%d micro (%.6f shares)",
@@ -2787,6 +2799,73 @@ func computeOrderMicroAmounts(
 	return usdcMicroRounded, sharesMicroRounded, nil
 }
 
+func computeOrderMicroAmountsFromShares(
+	rc roundConfig,
+	orderType string,
+	price string,
+	sharesMicro int64,
+) (usdcMicroRounded int64, sharesMicroRounded int64, err error) {
+	if sharesMicro <= 0 {
+		return 0, 0, fmt.Errorf("share amount must be > 0 (got %d micro-shares)", sharesMicro)
+	}
+
+	upperOrderType := strings.ToUpper(strings.TrimSpace(orderType))
+	isMarketOrder := upperOrderType == "FAK" || upperOrderType == "FOK"
+
+	priceRat, ok := new(big.Rat).SetString(price)
+	if !ok {
+		return 0, 0, fmt.Errorf("failed to parse price %q as rational", price)
+	}
+	if priceRat.Sign() <= 0 {
+		return 0, 0, fmt.Errorf("price must be > 0 (got %q)", price)
+	}
+	rawPrice := roundRatNormal(priceRat, rc.priceDecimals)
+
+	// shares = sharesMicro / 1e6
+	shares := new(big.Rat).Quo(new(big.Rat).SetInt64(sharesMicro), new(big.Rat).SetInt64(1_000_000))
+	sharesRounded := roundRatDown(shares, rc.sizeDecimals)
+
+	const marketOrderUSDDecimals = 2
+	const limitOrderUSDMaxDecimals = 4
+
+	usdcDecimals := rc.amountDecimals
+	if isMarketOrder {
+		usdcDecimals = marketOrderUSDDecimals
+	} else if usdcDecimals > limitOrderUSDMaxDecimals {
+		usdcDecimals = limitOrderUSDMaxDecimals
+	}
+
+	makerUSD := new(big.Rat).Mul(sharesRounded, rawPrice)
+	makerUSDRounded := roundRatDown(makerUSD, usdcDecimals)
+
+	sharesMicroStr, err := ratToMicroString(sharesRounded)
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to convert shares to micro units: %w", err)
+	}
+	makerMicroStr, err := ratToMicroString(makerUSDRounded)
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to convert maker amount to micro units: %w", err)
+	}
+
+	sharesMicroRounded, err = strconv.ParseInt(sharesMicroStr, 10, 64)
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to parse shares micro amount %q: %w", sharesMicroStr, err)
+	}
+	usdcMicroRounded, err = strconv.ParseInt(makerMicroStr, 10, 64)
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to parse maker micro amount %q: %w", makerMicroStr, err)
+	}
+
+	if err := validateAmountPrecision(usdcMicroRounded, usdcDecimals, "USDC"); err != nil {
+		return 0, 0, fmt.Errorf("amount precision error: %w", err)
+	}
+	if err := validateAmountPrecision(sharesMicroRounded, rc.sizeDecimals, "shares"); err != nil {
+		return 0, 0, fmt.Errorf("shares precision error: %w", err)
+	}
+
+	return usdcMicroRounded, sharesMicroRounded, nil
+}
+
 func pow10Int(n int) *big.Int {
 	if n < 0 {
 		return big.NewInt(0)
@@ -3662,6 +3741,7 @@ func (e *Executor) SellPosition(ctx context.Context, tokenID string, shares floa
 		Side:           types.OrderSideSell,
 		Price:          fmt.Sprintf("%.4f", price),
 		Size:           fmt.Sprintf("%.0f", shares*1_000_000), // micro-shares
+		SizeIsShares:   true,
 		OrderType:      orderType,
 		ExpirationUnix: expirationUnix,
 		MaxSlippage:    0, // Disable slippage check for sell
