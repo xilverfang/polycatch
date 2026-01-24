@@ -203,15 +203,8 @@ func (c *Config) Validate() error {
 		errs = append(errs, "FUNDER_ADDRESS must be a valid Ethereum address (0x + 40 chars)")
 	}
 
-	if c.CLOBAPIKey == "" {
-		errs = append(errs, "CLOB_API_KEY is required")
-	}
-	if c.CLOBAPISecret == "" {
-		errs = append(errs, "CLOB_API_SECRET is required")
-	}
-	if c.CLOBAPIPassphrase == "" {
-		errs = append(errs, "CLOB_API_PASSPHRASE is required")
-	}
+	// CLOB API credentials are provided per-user via Telegram setup.
+	// They are required for trading, but not for booting the service.
 
 	if !isValidAddress(c.USDCContract) {
 		errs = append(errs, "USDCContract must be a valid Ethereum address")
