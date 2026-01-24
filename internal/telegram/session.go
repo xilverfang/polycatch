@@ -136,7 +136,6 @@ Your session is now active for %d minutes.
 
 <b>Available commands:</b>
 • /monitor - Start watching for trades
-• /approval - Add Builder keys (first-time users)
 • /status - View your account
 • /settings - Modify preferences
 • /trades - View trade history

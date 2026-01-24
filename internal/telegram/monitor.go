@@ -7,7 +7,6 @@ import (
 	"math/big"
 	"os"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -489,27 +488,15 @@ func buildConfigFromCreds(creds *DecryptedCredentials) *config.Config {
 			signatureType = parsed
 		}
 	}
-	builderAPIKey := strings.TrimSpace(creds.BuilderAPIKey)
-	builderSecret := strings.TrimSpace(creds.BuilderAPISecret)
-	builderPassphrase := strings.TrimSpace(creds.BuilderAPIPassphrase)
-	if builderAPIKey == "" {
-		builderAPIKey = getEnvOrDefault("BUILDER_API_KEY", "")
-	}
-	if builderSecret == "" {
-		builderSecret = getEnvOrDefault("BUILDER_SECRET", "")
-	}
-	if builderPassphrase == "" {
-		builderPassphrase = getEnvOrDefault("BUILDER_PASSPHRASE", "")
-	}
 	return &config.Config{
 		SignerPrivateKey:       creds.SignerPrivateKey,
 		FunderAddress:          creds.FunderAddress,
 		CLOBAPIKey:             creds.APIKey,
 		CLOBAPISecret:          creds.APISecret,
 		CLOBAPIPassphrase:      creds.APIPassphrase,
-		BuilderAPIKey:          builderAPIKey,
-		BuilderSecret:          builderSecret,
-		BuilderPassphrase:      builderPassphrase,
+		BuilderAPIKey:          getEnvOrDefault("BUILDER_API_KEY", ""),
+		BuilderSecret:          getEnvOrDefault("BUILDER_SECRET", ""),
+		BuilderPassphrase:      getEnvOrDefault("BUILDER_PASSPHRASE", ""),
 		PolygonWSSURL:          getEnvOrDefault("POLYGON_WSS_URL", "wss://polygon-mainnet.g.alchemy.com/v2/demo"),
 		CLOBAPIURL:             "https://clob.polymarket.com",
 		DataAPIURL:             "https://data-api.polymarket.com",

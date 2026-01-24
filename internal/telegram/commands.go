@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/big"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -62,7 +63,6 @@ func (b *Bot) cmdHelp(ctx context.Context, chatID int64) {
 
 <b>Account</b>
 /setup - Create your account
-/approval - Add Builder keys for approvals
 /unlock - Start a session
 /lock - End your session
 /status - View account status
@@ -128,13 +128,13 @@ func (b *Bot) cmdStatus(ctx context.Context, chatID int64, userID int64) {
 					balanceStr = fmt.Sprintf("$%s", r.FloatString(2))
 				}
 			}
-			if strings.TrimSpace(creds.BuilderAPIKey) != "" &&
-				strings.TrimSpace(creds.BuilderAPISecret) != "" &&
-				strings.TrimSpace(creds.BuilderAPIPassphrase) != "" {
-				builderStatus = "✅ Set"
-			} else {
-				builderStatus = "❌ Not set"
-			}
+		}
+		if strings.TrimSpace(os.Getenv("BUILDER_API_KEY")) != "" &&
+			strings.TrimSpace(os.Getenv("BUILDER_SECRET")) != "" &&
+			strings.TrimSpace(os.Getenv("BUILDER_PASSPHRASE")) != "" {
+			builderStatus = "✅ Configured"
+		} else {
+			builderStatus = "❌ Not configured"
 		}
 	}
 
@@ -739,11 +739,6 @@ func (b *Bot) cmdCancel(ctx context.Context, chatID int64, userID int64) {
 	if b.isInSetup(userID) {
 		b.clearSetupState(userID)
 		b.sendMessage(chatID, "❌ Setup cancelled. Your data has been cleared.\n\nUse /setup to start again.")
-		return
-	}
-	if b.isInApproval(userID) {
-		b.clearApprovalState(userID)
-		b.sendMessage(chatID, "❌ Approval setup cancelled. Your data was not saved.\n\nUse /approval to start again.")
 		return
 	}
 
