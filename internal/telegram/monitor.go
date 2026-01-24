@@ -502,7 +502,7 @@ func buildConfigFromCreds(creds *DecryptedCredentials) *config.Config {
 		DataAPIURL:             "https://data-api.polymarket.com",
 		ChainID:                137,
 		SignatureType:          signatureType,                  // POLY_GNOSIS_SAFE (browser wallet via Polymarket). Use 1 for POLY_PROXY (email/Google), 0 for EOA
-		MinDepositAmount:       parseMinDeposit("10000000000"), // $10,000 in micro-USDC
+		MinDepositAmount:       parseMinDeposit("50000000000"), // $50,000 in micro-USDC
 		MinTradeAmount:         parseMinDeposit("1000000"),     // $1 minimum trade (1,000,000 micro-USDC)
 		USDCContract:           "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
 		CTFContract:            "0x4d97dcd97ec945f40cf65f87097ace5ea0476045",
