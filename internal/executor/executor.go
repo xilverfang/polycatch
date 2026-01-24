@@ -3642,7 +3642,7 @@ func (e *Executor) GetPositions(ctx context.Context) ([]*Position, error) {
 // This is used for the Telegram /trade UI to show only currently tradable positions.
 func (e *Executor) GetActivePositions(ctx context.Context) ([]*Position, error) {
 	url := fmt.Sprintf(
-		"%s/positions?user=%s&sizeThreshold=1&limit=100&sortBy=CURRENT&sortDirection=ASC&redeemable=false&mergeable=false",
+		"%s/positions?user=%s&sizeThreshold=0.01&limit=100&sortBy=CURRENT&sortDirection=ASC&redeemable=false&mergeable=false",
 		dataAPIBaseURL,
 		e.config.FunderAddress,
 	)
